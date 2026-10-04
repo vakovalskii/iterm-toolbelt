@@ -794,10 +794,12 @@ async def _pane_info(session) -> dict | None:
     return {"cwd": cwd, "session_id": None, "agent": ""}
 
 
-async def capture_windows(app) -> list:
-    """Все окна → [{title, split, panes:[{cwd, session_id, agent}]}], формат TermDeck."""
+async def capture_windows(app, only_current: bool = False) -> list:
+    """Окна → [{title, split, panes:[{cwd, session_id, agent}]}], формат TermDeck.
+    only_current: только окно, где сейчас фокус."""
     tabs = []
-    for w in app.terminal_windows:
+    wins = [app.current_terminal_window] if only_current else app.terminal_windows
+    for w in [x for x in wins if x]:
         for t in w.tabs:
             panes = []
             for sess in t.sessions:
@@ -843,11 +845,11 @@ def _write_snap(name: str, tabs: list):
     os.replace(path + ".tmp", path)
 
 
-async def snap_save(name: str) -> str:
+async def snap_save(name: str, only_current: bool = False) -> str:
     if not SAFE_SNAP.match(name or ""):
         return "имя: буквы, цифры, пробел, . : - до 60 знаков"
     app = await iterm2.async_get_app(CONN["c"])
-    tabs = await capture_windows(app)
+    tabs = await capture_windows(app, only_current)
     if not tabs:
         return "нечего сохранять: окон с папками нет"
     _write_snap(name, tabs)
@@ -1032,7 +1034,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             out, ctype = res.encode(), "text/plain; charset=utf-8"
         elif u.path in ("/snaps/save", "/snaps/restore"):
             try:
-                res = await (snap_save(qs.get("name", "")) if u.path == "/snaps/save"
+                res = await (snap_save(qs.get("name", ""), qs.get("scope") == "window") if u.path == "/snaps/save"
                              else snap_restore(qs.get("name", ""), qs.get("skip") == "1"))
             except Exception as ex:  # noqa: BLE001
                 res = f"ошибка: {type(ex).__name__}: {ex}"
