@@ -1,0 +1,46 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Агент: действия</title>
+<style>
+:root{--bg:#14161a;--fg:#d8dce3;--mut:#7d8590;--line:#2a2f37;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:12px/1.45 -apple-system,BlinkMacSystemFont,"SF Mono",Menlo,monospace}
+.s{padding:8px 10px;border-bottom:1px solid var(--line)}h3{margin:0 0 4px;font-size:11px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.mut{color:var(--mut)}.bad{color:var(--bad)}.ok{color:var(--ok)}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}.chip{cursor:pointer;padding:0 7px;border:1px solid var(--line);border-radius:9px;color:var(--mut)}.chip.on{color:var(--fg);border-color:var(--acc)}
+.it{display:flex;gap:6px;align-items:baseline;padding:2px 10px;cursor:pointer;white-space:nowrap;overflow:hidden}.it:hover{background:#1c2128}.it.sel{background:#1f2a3a}
+.it .t{color:var(--mut);flex:none;width:64px}.it .k{flex:none;width:44px}.it .l{overflow:hidden;text-overflow:ellipsis;font-family:"SF Mono",Menlo,monospace}
+.bash{color:#e3b341}.edit{color:#56d364}.read{color:#79c0ff}.search{color:#d2a8ff}.agent{color:#ff7b72}.web{color:#39c5cf}.mcp{color:#a5d6ff}.other{color:var(--mut)}
+pre{margin:4px 10px 8px;font:11px/1.35 "SF Mono",Menlo,monospace;white-space:pre-wrap;word-break:break-all;max-height:50vh;overflow:auto;background:#0e1013;padding:6px;border-radius:4px}
+.add{color:var(--ok)}.del{color:var(--bad)}.hunk{color:var(--acc)}
+#hdr{position:sticky;top:0;background:var(--bg);z-index:2}#end{position:fixed;right:10px;bottom:10px;width:28px;height:28px;border-radius:14px;background:#1f2a3a;color:var(--acc);display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid var(--line)}
+</style></head><body><div id="hdr" class="s mut">загрузка…</div><div id="list"></div><div id="end" title="к последнему" onclick="follow=true;sel=null;lastKey=null;tick();toEnd()">⬇</div>
+<script>
+const K={all:"все",bash:"bash",edit:"правки",read:"чтение",search:"поиск",agent:"агенты",web:"веб",mcp:"mcp"};
+let flt="all", sel=null, lastKey=null, follow=true, first=true, lastSid=null;
+try{flt=localStorage.getItem("flt")||"all"}catch(_){}
+const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const tm=iso=>{const d=new Date(iso);if(isNaN(d))return "";const n=new Date();const hm=d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"});return d.toDateString()===n.toDateString()?hm:d.toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"})+" "+hm.slice(0,5)};
+const col=t=>t.split("\n").map(l=>`<span class="${l.startsWith("+")?"add":l.startsWith("-")?"del":l.startsWith("@@")||l.startsWith("#")?"hunk":""}">${e(l)}</span>`).join("\n");
+window.addEventListener("scroll",()=>{follow=(window.innerHeight+window.scrollY)>=document.body.scrollHeight-60});
+const toEnd=()=>requestAnimationFrame(()=>window.scrollTo(0,document.documentElement.scrollHeight));
+async function detail(i){const t=await (await fetch("/agent/item?i="+i)).text();const b=document.getElementById("d"+i);if(b)b.innerHTML=`<pre>${col(t)}</pre>`}
+function render(d){
+  const c=d.claude;
+  let h=`<h3>${e(d.session)}</h3>`;
+  if(!c){h+=`<div class="mut">в этой панели нет запущенного claude</div>`;document.getElementById("hdr").innerHTML=h;document.getElementById("list").innerHTML="";return}
+  if(c.sid!==lastSid){lastSid=c.sid;first=true;sel=null}
+  const counts={};d.items.forEach(x=>counts[x.kind]=(counts[x.kind]||0)+1);
+  h+=`<div>${e(c.name||"")} <span class="mut">· ${e(c.status||"")} · pid ${e(c.pid)} · действий ${d.total}</span></div><div class="chips">`;
+  for(const k in K){if(k!=="all"&&!counts[k])continue;h+=`<span class="chip ${flt===k?"on":""}" data-k="${k}">${K[k]}${k==="all"?"":" "+counts[k]}</span>`}
+  h+=`</div>`;document.getElementById("hdr").innerHTML=h;
+  document.querySelectorAll(".chip").forEach(n=>n.onclick=()=>{flt=n.dataset.k;try{localStorage.setItem("flt",flt)}catch(_){};first=true;lastKey=null;tick()});
+  let L="";for(const x of d.items){if(flt!=="all"&&x.kind!==flt)continue;
+    L+=`<div class="it ${sel===x.i?"sel":""}" data-i="${x.i}"><span class="t">${e(tm(x.t))}</span><span class="k ${x.kind}">${e(x.kind==="other"||x.kind==="mcp"?x.tool.replace(/^mcp__/,"").split("__")[0].slice(0,8):K[x.kind])}</span><span class="l ${x.res==="err"?"bad":""}">${x.res==="err"?"✗ ":x.res===null?"… ":""}${e(x.line)}</span></div>${sel===x.i?`<div id="d${x.i}"></div>`:""}`}
+  document.getElementById("list").innerHTML=L||`<div class="s mut">пусто</div>`;
+  document.querySelectorAll(".it").forEach(n=>n.onclick=()=>{const i=+n.dataset.i;sel=sel===i?null:i;follow=false;lastKey=null;tick()});
+  if(sel!==null)detail(sel);
+  if(follow||first){first=false;toEnd()}
+}
+let V=null;
+async function tick(){try{const d=await (await fetch("/agent/state")).json();if(V&&d.v!==V){location.reload();return}V=d.v;const key=JSON.stringify([d.claude&&d.claude.sid,d.claude&&d.claude.status,d.total,d.items.length&&d.items[d.items.length-1].res,flt,sel]);if(key!==lastKey){lastKey=key;render(d)}}catch(_){document.getElementById("hdr").innerHTML='<span class="bad">панель не отвечает</span>'}}
+tick();setInterval(tick,1000);
+</script></body></html>

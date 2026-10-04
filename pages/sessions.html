@@ -1,0 +1,93 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Сессии</title>
+<style>
+:root{--bg:#14161a;--card:#1a1e24;--fg:#d8dce3;--mut:#7d8590;--line:#2a2f37;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff;--cl:#d97757;--cx:#3fb950}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:12px/1.45 -apple-system,BlinkMacSystemFont,"SF Mono",Menlo,monospace;overflow-x:hidden}
+#top{position:sticky;top:0;z-index:3;background:var(--bg);border-bottom:1px solid var(--line);padding:6px 10px}
+.nav{display:flex;gap:6px;align-items:center}.nav b{font-size:13px}.back{cursor:pointer;color:var(--acc);font-size:15px;padding:0 4px}.sp{flex:1}
+.tabs{display:flex;gap:4px}.tab{cursor:pointer;padding:1px 8px;border-radius:9px;border:1px solid var(--line);color:var(--mut)}.tab.on{color:var(--fg);border-color:var(--acc)}
+.opts{display:flex;gap:6px;align-items:center;margin-top:5px;color:var(--mut);flex-wrap:wrap}.opt{cursor:pointer;padding:0 6px;border-radius:9px;border:1px solid var(--line)}.opt.on{color:var(--fg);border-color:var(--acc)}
+input[type=search]{width:100%;margin-top:6px;background:#0e1013;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:5px 7px;font:inherit}
+.scr{padding:10px;animation:fwd .2s ease-out}.scr.back-anim{animation:bwd .2s ease-out}
+@keyframes fwd{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}@keyframes bwd{from{opacity:0;transform:translateX(-18px)}to{opacity:1;transform:none}}
+.big{display:grid;gap:10px}.agent{cursor:pointer;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;transition:transform .12s,border-color .12s}.agent:hover{transform:translateY(-2px);border-color:var(--acc)}
+.agent h2{margin:0 0 4px;font-size:16px}.agent.claude h2{color:var(--cl)}.agent.codex h2{color:var(--cx)}.agent.act h2{color:var(--ok)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.tile{cursor:pointer;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:2px;transition:transform .12s,border-color .12s;min-width:0}.tile:hover{transform:translateY(-2px);border-color:var(--acc)}
+.tile.here{border-color:var(--warn)}.tile .n{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tile .p{color:var(--mut);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mut{color:var(--mut)}.live{color:var(--ok)}.warn{color:var(--warn)}
+.r{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 8px;margin-bottom:6px;animation:fwd .18s ease-out}
+.rt{display:flex;gap:6px;align-items:baseline;white-space:nowrap}.ttl{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:2px 0}
+button{background:#1f2a3a;color:var(--acc);border:1px solid var(--line);border-radius:5px;padding:2px 9px;cursor:pointer;font:inherit;flex:none}button:hover{border-color:var(--acc)}button.new{color:var(--ok)}
+.claude-t{color:var(--cl)}.codex-t{color:var(--cx)}
+#toast{position:fixed;left:10px;right:10px;bottom:10px;background:#1f2a3a;border:1px solid var(--acc);border-radius:6px;padding:6px 8px;opacity:0;transition:opacity .2s;pointer-events:none}#toast.on{opacity:1}
+</style></head><body>
+<div id="top"></div><div id="main"></div><div id="toast"></div>
+<script>
+let D=null, V=null, nav=[{s:"start"}], q="", skip=true, where="window", lastKey=null, dir="fwd";
+let localPref=false;try{localPref=localStorage.getItem("skip")!==null;skip=localStorage.getItem("skip")!=="0";where=localStorage.getItem("where")||"";const n=JSON.parse(localStorage.getItem("nav")||"null");if(Array.isArray(n)&&n.length)nav=n}catch(_){}
+const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ago=ms=>{if(!ms)return "";const s=(Date.now()-ms)/1000;if(s<90)return "сейчас";if(s<3600)return Math.round(s/60)+" мин";if(s<86400)return Math.round(s/3600)+" ч";return Math.round(s/86400)+" дн"};
+const base=p=>(p||"").split("/").filter(Boolean).pop()||p||"?";
+const short=p=>(p||"").replace(/^\/Users\/[^/]+/,"~");
+const cur=()=>nav[nav.length-1];
+function go(st){dir="fwd";nav.push(st);save();lastKey=null;draw()}
+function back(){if(nav.length>1){dir="bwd";nav.pop();save();lastKey=null;draw()}}
+function home(s){dir="fwd";nav=[{s}];save();lastKey=null;draw()}
+function save(){try{localStorage.setItem("nav",JSON.stringify(nav))}catch(_){}}
+function toast(t){const n=document.getElementById("toast");n.textContent=t;n.classList.add("on");setTimeout(()=>n.classList.remove("on"),2200)}
+async function post(path,params){const r=await fetch(path+"?"+new URLSearchParams(params),{method:"POST",headers:{"X-Toolbelt":"1"}});return r.text()}
+async function launch(tool,id,dirp,btn){if(btn){btn.disabled=true;btn.textContent="…"}
+  const t=await post("/sessions/open",{tool,id:id||"",dir:dirp||"",skip:skip?"1":"0",where});
+  toast(t==="ok"?(id?"сессия открыта":"новая сессия запущена"):t);if(btn){btn.disabled=false;btn.textContent=id?"Восстановить":"＋ новая"}}
+async function focusTty(tty){const t=await post("/sessions/focus",{tty});toast(t==="ok"?"переключил":t)}
+function projects(tool){const m={};for(const r of D.rows){if(r.tool!==tool||!r.dir)continue;const p=m[r.dir]||(m[r.dir]={dir:r.dir,n:0,last:0,live:0});p.n++;p.last=Math.max(p.last,r.last);if(r.live)p.live++}
+  return Object.values(m).sort((a,b)=>(b.dir===D.cwd)-(a.dir===D.cwd)||b.last-a.last)}
+function topbar(){const c=cur();const act=D.active.length;
+  let h=`<div class="nav">${nav.length>1?'<span class="back" title="назад">←</span>':""}<b>${e(c.s==="start"?"Сессии":c.s==="active"?"Активные":c.s==="projects"?(c.tool==="claude"?"Claude Code":"Codex"):base(c.dir))}</b><span class="sp"></span>
+  <div class="tabs"><span class="tab ${c.s!=="active"?"on":""}" data-h="start">агенты</span><span class="tab ${c.s==="active"?"on":""}" data-h="active">активные ${act}</span></div></div>
+  <div class="opts">открывать: <span class="opt ${where==="window"?"on":""}" data-w="window">окно</span><span class="opt ${where==="tab"?"on":""}" data-w="tab">вкладку</span><span class="sp"></span><label><input type="checkbox" id="skip" ${skip?"checked":""}> skip-permissions</label><a href="/settings#agents" title="прокси и флаги агентов" style="color:var(--acc);text-decoration:none">⚙ прокси</a></div>`;
+  if(c.s==="projects"||c.s==="project")h+=`<input id="q" type="search" placeholder="${c.s==="projects"?"проект или текст сессии…":"поиск в сессиях проекта…"}" value="${e(q)}">`;
+  const T=document.getElementById("top");T.innerHTML=h;
+  T.querySelector(".back")?.addEventListener("click",back);
+  T.querySelectorAll("[data-h]").forEach(n=>n.onclick=()=>{q="";home(n.dataset.h)});
+  T.querySelectorAll("[data-w]").forEach(n=>n.onclick=()=>{where=n.dataset.w;try{localStorage.setItem("where",where)}catch(_){};topbar()});
+  T.querySelector("#skip").onchange=ev=>{skip=ev.target.checked;localPref=true;try{localStorage.setItem("skip",skip?"1":"0")}catch(_){}};
+  const qi=T.querySelector("#q");if(qi){qi.oninput=ev=>{q=ev.target.value;body()};}
+}
+function body(){const c=cur();let h="";
+  if(c.s==="start"){
+    const st=t=>{const r=D.rows.filter(x=>x.tool===t);return{n:r.length,p:new Set(r.map(x=>x.dir)).size,last:r[0]?.last||0,live:r.filter(x=>x.live).length}};
+    const A=st("claude"),B=st("codex");
+    h=`<div class="big"><div class="agent claude" data-a="claude"><h2>Claude Code</h2><div>${A.n} сессий · ${A.p} проектов</div><div class="mut">последняя ${ago(A.last)} ${A.live?`· <span class="live">● ${A.live} идёт</span>`:""}</div></div>
+    <div class="agent codex" data-a="codex"><h2>Codex</h2><div>${B.n} сессий · ${B.p} проектов</div><div class="mut">последняя ${ago(B.last)}</div></div>
+    <div class="agent act" data-act="1"><h2>Активные сейчас</h2><div>${D.active.length} запущено</div><div class="mut">перейти в окно, где идёт агент</div></div></div>
+    <div class="mut" style="margin-top:10px">панель: ${e(D.session||"?")} · ${e(short(D.cwd))}</div>`;
+  }else if(c.s==="projects"){
+    const ql=q.toLowerCase().trim();let ps=projects(c.tool);
+    if(ql)ps=ps.filter(p=>p.dir.toLowerCase().includes(ql)||D.rows.some(r=>r.dir===p.dir&&r.tool===c.tool&&r.title.toLowerCase().includes(ql)));
+    h=`<div class="grid">${ps.map(p=>`<div class="tile ${p.dir===D.cwd?"here":""}" data-d="${e(p.dir)}"><span class="n">${e(base(p.dir))}</span><span class="p">${e(short(p.dir))}</span><span class="mut">${p.n} сесс. · ${ago(p.last)} ${p.live?`<span class="live">● ${p.live}</span>`:""}${p.dir===D.cwd?' <span class="warn">здесь</span>':""}</span><span><button class="new" data-new="${e(p.dir)}">＋ новая</button></span></div>`).join("")}</div>`||`<div class="mut">ничего</div>`;
+  }else if(c.s==="project"){
+    const ql=q.toLowerCase().trim();let rs=D.rows.filter(r=>r.tool===c.tool&&r.dir===c.dir);
+    if(ql)rs=rs.filter(r=>(r.title+" "+r.id).toLowerCase().includes(ql));
+    h=`<div style="margin-bottom:8px;display:flex;gap:6px;align-items:center"><span class="mut">${e(short(c.dir))}</span><span class="sp"></span><button class="new" data-new="${e(c.dir)}">＋ новая ${c.tool==="claude"?"Claude":"Codex"}</button></div>`;
+    h+=rs.slice(0,300).map(r=>`<div class="r"><div class="rt"><span class="mut">${ago(r.last)}</span>${r.live?'<span class="live">● идёт</span>':""}<span class="sp"></span><button data-id="${e(r.id)}" data-live="${r.live?1:0}">Восстановить</button></div><div class="ttl">${e(r.title)||'<span class="mut">(без текста)</span>'}</div><div class="mut">${e(r.id.slice(0,8))}</div></div>`).join("")||`<div class="mut">сессий нет</div>`;
+  }else if(c.s==="active"){
+    const t={};D.rows.forEach(r=>t[r.id]=r.title);
+    h=D.active.map(a=>`<div class="r"><div class="rt"><span class="${a.tool}-t">${a.tool}</span><b>${e(base(a.dir))}</b><span class="mut">${e(a.status||"")}</span><span class="sp"></span>${a.tty&&a.tty!=="??"?`<button data-tty="${e(a.tty)}">Перейти</button>`:'<span class="mut">не в терминале</span>'}</div><div class="ttl">${e(t[a.id]||a.name||"")}</div><div class="mut">${e(short(a.dir))} · pid ${a.pid}${a.since?" · с "+ago(a.since):""}</div></div>`).join("")||`<div class="mut">агентов не запущено</div>`;
+  }
+  const M=document.getElementById("main");M.innerHTML=`<div class="scr ${dir==="bwd"?"back-anim":""}">${h}</div>`;dir="none";
+  M.querySelectorAll("[data-a]").forEach(n=>n.onclick=()=>{q="";go({s:"projects",tool:n.dataset.a})});
+  M.querySelectorAll("[data-act]").forEach(n=>n.onclick=()=>home("active"));
+  M.querySelectorAll(".tile").forEach(n=>n.onclick=ev=>{if(ev.target.closest("button"))return;q="";go({s:"project",tool:cur().tool,dir:n.dataset.d})});
+  M.querySelectorAll("[data-new]").forEach(b=>b.onclick=ev=>{ev.stopPropagation();launch(cur().tool,"",b.dataset.new,b)});
+  M.querySelectorAll("[data-id]").forEach(b=>b.onclick=()=>{if(b.dataset.live==="1"&&!confirm("Эта сессия уже идёт в другом окне. Открыть вторую копию?"))return;launch(cur().tool,b.dataset.id,cur().dir,b)});
+  M.querySelectorAll("[data-tty]").forEach(b=>b.onclick=()=>focusTty(b.dataset.tty));
+}
+function draw(){if(!D)return;topbar();body()}
+async function tick(){try{const d=await (await fetch("/sessions/state")).json();if(V&&d.v!==V){location.reload();return}V=d.v;if(!localPref){skip=d.skip}if(!where)where=d.open_in||"window";
+  if(!d.ok){document.getElementById("main").innerHTML='<div class="scr mut">сканирую сессии…</div>';return}
+  const k=JSON.stringify([d.cwd,d.rows.length,d.rows[0]?.last,d.active.map(a=>a.pid+a.status)]);
+  if(k!==lastKey){const first=!D;D=d;lastKey=k;if(first||document.activeElement?.id!=="q")draw();else body()}}catch(_){document.getElementById("main").innerHTML='<div class="scr mut">панель не отвечает</div>'}}
+tick();setInterval(tick,2000);
+</script></body></html>

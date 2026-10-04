@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+config.json
+scan-cache.json
+*.log
+.playwright-mcp/

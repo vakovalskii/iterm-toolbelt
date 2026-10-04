@@ -1,0 +1,13 @@
+{
+  "port": 47811,
+  "title_prefix": "◆ ",
+  "tabs": {"git": true, "agent": true, "sessions": true, "settings": false},
+  "open_in": "window",
+  "agents": {
+    "claude": {"prefix": "", "flags": "", "skip_permissions": false},
+    "codex": {"prefix": "", "flags": ""}
+  },
+  "repo_checks": [],
+  "auto_show_toolbelt": true,
+  "onboarded": false
+}

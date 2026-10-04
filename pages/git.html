@@ -1,0 +1,45 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Git и PR</title>
+<style>
+:root{--bg:#14161a;--fg:#d8dce3;--mut:#7d8590;--line:#2a2f37;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:12px/1.45 -apple-system,BlinkMacSystemFont,"SF Mono",Menlo,monospace}
+.s{padding:8px 10px;border-bottom:1px solid var(--line)}h3{margin:0 0 4px;font-size:11px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.mut{color:var(--mut)}.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}a{color:var(--acc);text-decoration:none}
+.row{display:flex;gap:6px;align-items:baseline;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row span:last-child{overflow:hidden;text-overflow:ellipsis}
+.f{cursor:pointer;padding:1px 0}.f:hover{background:#1c2128}.f.sel{background:#1f2a3a}.st{width:22px;flex:none;color:var(--warn)}
+pre{margin:6px 0 0;font:11px/1.35 "SF Mono",Menlo,monospace;white-space:pre-wrap;word-break:break-all;max-height:55vh;overflow:auto;background:#0e1013;padding:6px;border-radius:4px}
+.add{color:var(--ok)}.del{color:var(--bad)}.hunk{color:var(--acc)}.pill{display:inline-block;padding:0 6px;border-radius:9px;border:1px solid var(--line)}
+details summary{cursor:pointer;color:var(--mut)}
+</style></head><body><div id="app" class="s mut">загрузка…</div>
+<script>
+let sel=null, last=null;
+const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ck=c=>!c?"":(c.fail?`<span class="bad">✗${c.fail}</span> `:"")+(c.pending?`<span class="warn">●${c.pending}</span> `:"")+(c.pass?`<span class="ok">✓${c.pass}</span>`:"");
+function render(d){
+  const ob=d.onboarded?"":`<div class="s warn">Первый запуск: загляни во вкладку «Настройки», там короткое знакомство и прокси для агентов.</div>`;
+  if(!d.cwd){return ob+`<div class="s mut">${e(d.session)||"панель"}: папка не определена</div>`}
+  if(!d.repo){return ob+`<div class="s"><h3>${e(d.session)}</h3><div class="mut">${e(d.cwd)}</div><div class="mut">не git-репозиторий</div></div>`}
+  const r=d.repo; let h=ob+`<div class="s"><h3>${e(d.session)}</h3>
+  <div class="row"><b>${e(r.branch)}</b><span class="mut">${e(r.name)}</span></div>
+  <div class="row mut"><span>${e(r.head)}</span></div><div>`;
+  if(r.behind_main!=null) h+=`main: ${r.behind_main?`<span class="warn">↓${r.behind_main}</span>`:'<span class="ok">↓0</span>'} ${r.ahead_main?`<span class="acc">↑${r.ahead_main}</span>`:""} `;
+  if(r.upstream) h+=`<span class="mut">· ${e(r.upstream)}</span> ${r.behind_up?`<span class="warn">↓${r.behind_up}</span>`:""}${r.ahead_up?` <span class="warn">↑${r.ahead_up} не запушено</span>`:""}`;
+  else if(r.branch!=="main"&&r.branch!=="HEAD") h+=`<span class="warn">· ветка не запушена</span>`;
+  h+=`</div></div>`;
+  for(const c of (d.checks||[])){const cls=c.rc===0?"ok":"bad";h+=`<div class="s"><h3>${e(c.name)}</h3><div class="${cls}">${e(c.lines[0]||("код "+c.rc))}</div>${c.lines.slice(1).map(x=>`<div class="mut row"><span>${e(x)}</span></div>`).join("")}</div>`}
+  if(d.pr){const p=d.pr;h+=`<div class="s"><h3>PR ветки</h3><div class="row"><a href="${e(p.url)}" target="_blank">#${p.number}</a><span>${e(p.title)}</span></div>
+   <div>${p.isDraft?'<span class="pill mut">draft</span> ':""}<span class="pill">${e(p.state)}</span> ${ck(p.checks)} ${p.mergeable==="CONFLICTING"?'<span class="bad">конфликт</span>':""}</div></div>`}
+  h+=`<div class="s"><h3>Изменения ${r.files_total?`(${r.files_total})`:""}</h3><div class="mut">${e(r.shortstat)||(r.files_total?"":"чисто")}</div>`;
+  for(const f of r.files){h+=`<div class="row f ${sel===f.path?"sel":""}" data-p="${e(f.path)}"><span class="st">${e(f.st)}</span><span>${e(f.path)}</span></div>`}
+  h+=`<div id="diff"></div></div>`;
+  if(d.my_prs&&d.my_prs.length){h+=`<div class="s"><h3>Мои открытые PR (${d.my_prs.length})</h3>`;for(const p of d.my_prs){h+=`<div class="row"><a href="${e(p.url)}" target="_blank">#${p.number}</a>${p.isDraft?'<span class="mut">draft</span>':""}<span>${ck(p.checks)}</span><span>${e(p.title)}</span></div>`}h+=`</div>`}
+  if(d.worktrees&&d.worktrees.length>1){h+=`<div class="s"><details><summary>Ворктри: ${d.worktrees.length}</summary>${d.worktrees.map(w=>`<div class="row mut"><span>${e(w.branch||"")}</span><span>${e((w.path||"").split("/").slice(-1)[0])}</span></div>`).join("")}</details></div>`}
+  h+=`<div class="s mut">${e(d.ts)} · ${e(d.cwd)}</div>`; return h;
+}
+function colorDiff(t){return t.split("\n").map(l=>{const c=l.startsWith("+")&&!l.startsWith("+++")?"add":l.startsWith("-")&&!l.startsWith("---")?"del":l.startsWith("@@")?"hunk":"";return `<span class="${c}">${e(l)}</span>`}).join("\n")}
+async function showDiff(){const box=document.getElementById("diff");if(!box||!sel)return;const t=await (await fetch("/diff?f="+encodeURIComponent(sel))).text();box.innerHTML=`<pre>${colorDiff(t)}</pre>`}
+let V=null;
+async function tick(){try{const d=await (await fetch("/state")).json();if(V&&d.v!==V){location.reload();return}V=d.v;const key=JSON.stringify(d);if(key!==last){last=key;const open=document.querySelector("details")?.open;document.getElementById("app").outerHTML=`<div id="app">${render(d)}</div>`;if(open)document.querySelector("details")?.setAttribute("open","");
+ document.querySelectorAll(".f").forEach(n=>n.onclick=()=>{sel=sel===n.dataset.p?null:n.dataset.p;last=null;tick()});if(sel)showDiff()}}catch(err){document.getElementById("app").innerHTML=`<div class="s bad">панель не отвечает</div>`}}
+tick();setInterval(tick,1000);
+</script></body></html>
