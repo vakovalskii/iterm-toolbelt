@@ -820,6 +820,8 @@ async def capture_windows(app, only_current: bool = False) -> list:
 
 
 def snap_list() -> list:
+    rows = (CACHE.get("scan:sessions") or (0, None))[1] or []
+    titles = {r["id"]: r["title"] for r in rows}
     out = []
     for p in sorted(glob.glob(os.path.join(SNAP_DIR, "*.json")), key=os.path.getmtime, reverse=True):
         try:
@@ -830,8 +832,14 @@ def snap_list() -> list:
         name = os.path.basename(p)[:-5]
         out.append({"name": name, "mtime": int(os.path.getmtime(p) * 1000), "auto": name.startswith((AUTO_PREFIX, "автосохранение")),
                     "tabs": [{"title": t.get("title") or os.path.basename((t.get("panes") or [{}])[0].get("cwd", "")),
+                              "split": t.get("split", "vertical"),
                               "panes": len(t.get("panes") or []),
-                              "agents": sum(1 for x in t.get("panes") or [] if x.get("session_id"))} for t in tabs]})
+                              "agents": sum(1 for x in t.get("panes") or [] if x.get("session_id")),
+                              "detail": [{"dir": os.path.basename((x.get("cwd") or "").rstrip("/")) or "~",
+                                          "sid": (x.get("session_id") or "")[:8],
+                                          "agent": x.get("agent") or ("claude" if x.get("session_id") else ""),
+                                          "title": titles.get(x.get("session_id") or "", "")[:80]}
+                                         for x in t.get("panes") or []]} for t in tabs]})
     return out
 
 

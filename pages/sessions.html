@@ -20,6 +20,12 @@ input[type=search]{width:100%;margin-top:6px;background:#0e1013;color:var(--fg);
 .rt{display:flex;gap:6px;align-items:baseline;white-space:nowrap}.ttl{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:2px 0}
 button{background:#1f2a3a;color:var(--acc);border:1px solid var(--line);border-radius:5px;padding:2px 9px;cursor:pointer;font:inherit;flex:none}button:hover{border-color:var(--acc)}button.new{color:var(--ok)}
 .claude-t{color:var(--cl)}.codex-t{color:var(--cx)}
+.win{margin-top:6px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:#0e1013}
+.win .bar{display:flex;gap:2px;padding:4px 4px 0;background:#181c22;overflow-x:auto}.win .bar span{padding:2px 7px;border-radius:5px 5px 0 0;background:#232831;color:var(--mut);white-space:nowrap;font-size:10px;cursor:pointer}.win .bar span.on{background:#0e1013;color:var(--fg)}
+.win .body{display:flex;gap:3px;padding:4px;min-height:44px}.win .body.h{flex-direction:column}
+.pane{flex:1;min-width:0;border:1px solid #2a2f37;border-radius:4px;padding:4px 5px;display:flex;flex-direction:column;gap:1px}
+.pane .d{font-weight:600;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pane .a{font-size:10px}.pane .t{font-size:10px;color:var(--mut);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pane.claude{border-color:#5a3a2c}.pane.codex{border-color:#24502d}
 #toast{position:fixed;left:10px;right:10px;bottom:10px;background:#1f2a3a;border:1px solid var(--acc);border-radius:6px;padding:6px 8px;opacity:0;transition:opacity .2s;pointer-events:none}#toast.on{opacity:1}
 </style></head><body>
 <div id="top"></div><div id="main"></div><div id="toast"></div>
@@ -75,7 +81,7 @@ function body(){const c=cur();let h="";
   }else if(c.s==="snaps"){
     const S=SN||[];
     h=`<div class="r"><div class="rt"><b>Сохранить окна</b><span class="sp"></span><button class="new" data-scope="window" id="snapnow">💾 это окно</button><button class="new" data-scope="all">💾 все окна</button></div><div class="mut">«это окно» — окно, где сейчас фокус. В снимке вкладки, сплиты, имена, папки, сессии агентов. Автосохранение раз в 5 минут, если что-то поменялось</div></div>`;
-    h+=S.map(x=>`<div class="r"><div class="rt"><b>${e(x.name)}</b>${x.auto?'<span class="mut">авто</span>':""}<span class="mut">${ago(x.mtime)}</span><span class="sp"></span><button data-snap="${e(x.name)}">Восстановить</button></div><div class="mut">вкладок ${x.tabs.length} · панелей ${x.tabs.reduce((a,t)=>a+t.panes,0)} · агентов ${x.tabs.reduce((a,t)=>a+t.agents,0)}</div><div class="ttl">${x.tabs.map(t=>e(t.title)+(t.panes>1?` ×${t.panes}`:"")).join(" · ")}</div></div>`).join("")||`<div class="mut">снимков нет</div>`;
+    h+=S.map(x=>`<div class="r"><div class="rt"><b>${e(x.name)}</b>${x.auto?'<span class="mut">авто</span>':""}<span class="mut">${ago(x.mtime)}</span><span class="sp"></span><button data-snap="${e(x.name)}">Восстановить</button></div><div class="mut">вкладок ${x.tabs.length} · панелей ${x.tabs.reduce((a,t)=>a+t.panes,0)} · агентов ${x.tabs.reduce((a,t)=>a+t.agents,0)}</div>${winViz(x)}</div>`).join("")||`<div class="mut">снимков нет</div>`;
   }else if(c.s==="active"){
     const t={};D.rows.forEach(r=>t[r.id]=r.title);
     h=D.active.map(a=>`<div class="r"><div class="rt"><span class="${a.tool}-t">${a.tool}</span><b>${e(base(a.dir))}</b><span class="mut">${e(a.status||"")}</span><span class="sp"></span>${a.tty&&a.tty!=="??"?`<button data-tty="${e(a.tty)}">Перейти</button>`:'<span class="mut">не в терминале</span>'}</div><div class="ttl">${e(t[a.id]||a.name||"")}</div><div class="mut">${e(short(a.dir))} · pid ${a.pid}${a.since?" · с "+ago(a.since):""}</div></div>`).join("")||`<div class="mut">агентов не запущено</div>`;
@@ -93,10 +99,15 @@ function body(){const c=cur();let h="";
   M.querySelectorAll("[data-new]").forEach(b=>b.onclick=ev=>{ev.stopPropagation();launch(cur().tool,"",b.dataset.new,b)});
   M.querySelectorAll("[data-id]").forEach(b=>b.onclick=()=>{if(b.dataset.live==="1"&&!confirm("Эта сессия уже идёт в другом окне. Открыть вторую копию?"))return;launch(cur().tool,b.dataset.id,cur().dir,b)});
   M.querySelectorAll("[data-tty]").forEach(b=>b.onclick=()=>focusTty(b.dataset.tty));
+  M.querySelectorAll("[data-sn]").forEach(n=>n.onclick=()=>{SNTAB[n.dataset.sn]=+n.dataset.ti;body()});
   M.querySelectorAll("[data-scope]").forEach(btn=>btn.addEventListener("click",async ev=>{const b=ev.target;const scope=b.dataset.scope;const n=prompt("Имя снимка","снимок "+new Date().toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}).replace(",","").replace(/\//g,"."));if(!n)return;b.disabled=true;const t=await post("/snaps/save",{name:n,scope});b.disabled=false;toast(t==="ok"?"сохранено":t);loadSnaps(true)}));
   M.querySelectorAll("[data-snap]").forEach(b=>b.onclick=async()=>{if(!confirm("Открыть снимок «"+b.dataset.snap+"» в новом окне? Агенты поднимутся через --resume."))return;b.disabled=true;b.textContent="…";const t=await post("/snaps/restore",{name:b.dataset.snap,skip:skip?"1":"0"});b.disabled=false;b.textContent="Восстановить";toast(t==="ok"?"окно восстановлено":t)});
 }
-let SN=null;
+let SN=null; const SNTAB={};
+function winViz(x){const ti=Math.min(SNTAB[x.name]||0,x.tabs.length-1);const tab=x.tabs[ti];if(!tab)return"";
+  const bar=x.tabs.map((t,i)=>`<span class="${i===ti?"on":""}" data-sn="${e(x.name)}" data-ti="${i}">${e(t.title)}${t.panes>1?" ×"+t.panes:""}</span>`).join("");
+  const panes=(tab.detail||[]).map(p=>`<div class="pane ${e(p.agent)}"><span class="d">${e(p.dir)}</span><span class="a ${p.agent}-t">${p.agent?("● "+e(p.agent)+" "+e(p.sid)):'<span class="mut">шелл</span>'}</span>${p.title?`<span class="t">${e(p.title)}</span>`:""}</div>`).join("");
+  return `<div class="win"><div class="bar">${bar}</div><div class="body ${tab.split==="horizontal"?"h":""}">${panes}</div></div>`}
 async function loadSnaps(force){if(cur().s!=="snaps"&&!force)return;try{const d=await (await fetch("/snaps/state")).json();const k=JSON.stringify(d.snaps.map(x=>[x.name,x.mtime]));if(force||k!==loadSnaps.k){loadSnaps.k=k;SN=d.snaps;if(cur().s==="snaps")body()}}catch(_){}}
 function draw(){if(!D)return;topbar();body();if(cur().s==="snaps"&&!SN)loadSnaps(true)}
 async function tick(){try{const d=await (await fetch("/sessions/state")).json();if(V&&d.v!==V){location.reload();return}V=d.v;if(!localPref){skip=d.skip}if(!where)where=d.open_in||"window";
