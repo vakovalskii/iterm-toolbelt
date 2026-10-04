@@ -4,6 +4,10 @@
 
 [English below](#english)
 
+![Toolbelt рядом с терминалом: действия агента, снимки окон, git](docs/overview.jpg)
+
+<p><img src="docs/sessions-start.jpg" width="49%" alt="Сессии: выбор агента"> <img src="docs/sessions-active.jpg" width="49%" alt="Сессии: запущенные агенты"></p>
+
 | вкладка | что показывает |
 |---|---|
 | **◆ Git и PR** | ветка, отставание от `origin/main` и upstream, изменённые файлы с диффом по клику, PR текущей ветки и CI (`gh`), мои открытые PR, ворктри, свои проверки репо |
