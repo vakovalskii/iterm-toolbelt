@@ -8,7 +8,7 @@
 .tabs{display:flex;gap:4px}.tab{cursor:pointer;padding:1px 8px;border-radius:9px;border:1px solid var(--line);color:var(--mut)}.tab.on{color:var(--fg);border-color:var(--acc)}
 .opts{display:flex;gap:6px;align-items:center;margin-top:5px;color:var(--mut);flex-wrap:wrap}.opt{cursor:pointer;padding:0 6px;border-radius:9px;border:1px solid var(--line)}.opt.on{color:var(--fg);border-color:var(--acc)}
 input[type=search]{width:100%;margin-top:6px;background:#0e1013;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:5px 7px;font:inherit}
-.scr{padding:10px;animation:fwd .2s ease-out}.scr.back-anim{animation:bwd .2s ease-out}
+.scr{padding:10px}.scr.fwd-anim{animation:fwd .2s ease-out}.scr.back-anim{animation:bwd .2s ease-out}
 @keyframes fwd{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}@keyframes bwd{from{opacity:0;transform:translateX(-18px)}to{opacity:1;transform:none}}
 .big{display:grid;gap:10px}.agent{cursor:pointer;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;transition:transform .12s,border-color .12s}.agent:hover{transform:translateY(-2px);border-color:var(--acc)}
 .agent h2{margin:0 0 4px;font-size:16px}.agent.claude h2{color:var(--cl)}.agent.codex h2{color:var(--cx)}.agent.act h2{color:var(--ok)}
@@ -16,7 +16,7 @@ input[type=search]{width:100%;margin-top:6px;background:#0e1013;color:var(--fg);
 .tile{cursor:pointer;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:2px;transition:transform .12s,border-color .12s;min-width:0}.tile:hover{transform:translateY(-2px);border-color:var(--acc)}
 .tile.here{border-color:var(--warn)}.tile .n{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tile .p{color:var(--mut);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mut{color:var(--mut)}.live{color:var(--ok)}.warn{color:var(--warn)}
-.r{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 8px;margin-bottom:6px;animation:fwd .18s ease-out}
+.r{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 8px;margin-bottom:6px}
 .rt{display:flex;gap:6px;align-items:baseline;white-space:nowrap}.ttl{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:2px 0}
 button{background:#1f2a3a;color:var(--acc);border:1px solid var(--line);border-radius:5px;padding:2px 9px;cursor:pointer;font:inherit;flex:none}button:hover{border-color:var(--acc)}button.new{color:var(--ok)}
 .claude-t{color:var(--cl)}.codex-t{color:var(--cx)}
@@ -48,7 +48,7 @@ function topbar(){const c=cur();const act=D.active.length;
   <div class="tabs"><span class="tab ${c.s!=="active"?"on":""}" data-h="start">агенты</span><span class="tab ${c.s==="active"?"on":""}" data-h="active">активные ${act}</span></div></div>
   <div class="opts">открывать: <span class="opt ${where==="window"?"on":""}" data-w="window">окно</span><span class="opt ${where==="tab"?"on":""}" data-w="tab">вкладку</span><span class="sp"></span><label><input type="checkbox" id="skip" ${skip?"checked":""}> skip-permissions</label><a href="/settings#agents" title="прокси и флаги агентов" style="color:var(--acc);text-decoration:none">⚙ прокси</a></div>`;
   if(c.s==="projects"||c.s==="project")h+=`<input id="q" type="search" placeholder="${c.s==="projects"?"проект или текст сессии…":"поиск в сессиях проекта…"}" value="${e(q)}">`;
-  const T=document.getElementById("top");T.innerHTML=h;
+  const T=document.getElementById("top");if(T.dataset.h===h)return;T.dataset.h=h;T.innerHTML=h;
   T.querySelector(".back")?.addEventListener("click",back);
   T.querySelectorAll("[data-h]").forEach(n=>n.onclick=()=>{q="";home(n.dataset.h)});
   T.querySelectorAll("[data-w]").forEach(n=>n.onclick=()=>{where=n.dataset.w;try{localStorage.setItem("where",where)}catch(_){};topbar()});
@@ -76,7 +76,13 @@ function body(){const c=cur();let h="";
     const t={};D.rows.forEach(r=>t[r.id]=r.title);
     h=D.active.map(a=>`<div class="r"><div class="rt"><span class="${a.tool}-t">${a.tool}</span><b>${e(base(a.dir))}</b><span class="mut">${e(a.status||"")}</span><span class="sp"></span>${a.tty&&a.tty!=="??"?`<button data-tty="${e(a.tty)}">Перейти</button>`:'<span class="mut">не в терминале</span>'}</div><div class="ttl">${e(t[a.id]||a.name||"")}</div><div class="mut">${e(short(a.dir))} · pid ${a.pid}${a.since?" · с "+ago(a.since):""}</div></div>`).join("")||`<div class="mut">агентов не запущено</div>`;
   }
-  const M=document.getElementById("main");M.innerHTML=`<div class="scr ${dir==="bwd"?"back-anim":""}">${h}</div>`;dir="none";
+  const M=document.getElementById("main");
+  if(dir==="none"&&M.dataset.h===h)return;   // ничего видимого не поменялось: не трогаем DOM
+  const y=window.scrollY;
+  M.dataset.h=h;
+  M.innerHTML=`<div class="scr ${dir==="bwd"?"back-anim":dir==="fwd"?"fwd-anim":""}">${h}</div>`;
+  if(dir==="none")window.scrollTo(0,y);
+  dir="none";
   M.querySelectorAll("[data-a]").forEach(n=>n.onclick=()=>{q="";go({s:"projects",tool:n.dataset.a})});
   M.querySelectorAll("[data-act]").forEach(n=>n.onclick=()=>home("active"));
   M.querySelectorAll(".tile").forEach(n=>n.onclick=ev=>{if(ev.target.closest("button"))return;q="";go({s:"project",tool:cur().tool,dir:n.dataset.d})});
@@ -87,7 +93,7 @@ function body(){const c=cur();let h="";
 function draw(){if(!D)return;topbar();body()}
 async function tick(){try{const d=await (await fetch("/sessions/state")).json();if(V&&d.v!==V){location.reload();return}V=d.v;if(!localPref){skip=d.skip}if(!where)where=d.open_in||"window";
   if(!d.ok){document.getElementById("main").innerHTML='<div class="scr mut">сканирую сессии…</div>';return}
-  const k=JSON.stringify([d.cwd,d.rows.length,d.rows[0]?.last,d.active.map(a=>a.pid+a.status)]);
+  const k=JSON.stringify([d.cwd,d.rows.length,d.rows[0]?.id,Math.floor((d.rows[0]?.last||0)/60000),d.active.map(a=>a.pid+a.status),d.rows.filter(r=>r.live).map(r=>r.id)]);
   if(k!==lastKey){const first=!D;D=d;lastKey=k;if(first||document.activeElement?.id!=="q")draw();else body()}}catch(_){document.getElementById("main").innerHTML='<div class="scr mut">панель не отвечает</div>'}}
 tick();setInterval(tick,2000);
 </script></body></html>
