@@ -867,8 +867,10 @@ async def snap_save(name: str, only_current: bool = False) -> str:
 async def autosave_loop(app):
     """Раз в 5 минут снимок всех окон, только если что-то поменялось и есть хоть один
     агент. Хранятся последние AUTO_KEEP: закрытые разом окна не затрут снимок пустым."""
+    delay = 60   # первый снимок через минуту после старта, дальше раз в 5 минут
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(delay)
+        delay = 300
         if not CFG.get("autosave", True):
             continue
         try:
@@ -1024,7 +1026,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         elif u.path == "/sessions/state":
             out = json.dumps(await sessions_state(), ensure_ascii=False).encode()
         elif u.path == "/snaps/state":
-            out = json.dumps({"v": BOOT, "snaps": snap_list()}, ensure_ascii=False).encode()
+            out = json.dumps({"v": BOOT, "snaps": snap_list(), "autosave": bool(CFG.get("autosave", True))},
+                             ensure_ascii=False).encode()
         elif u.path == "/settings/state":
             out = json.dumps(settings_state(), ensure_ascii=False).encode()
         elif u.path in ("/sessions/open", "/sessions/focus", "/settings/save", "/snaps/save", "/snaps/restore") and not mutating:

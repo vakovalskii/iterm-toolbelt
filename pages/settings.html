@@ -50,6 +50,7 @@ function render(d){C=d.config;
   h+=`<div class="s"><h3>Где открывать сессию</h3><div class="row"><span class="chip ${C.open_in==="window"?"on":""}" data-w="window">новое окно</span><span class="chip ${C.open_in==="tab"?"on":""}" data-w="tab">вкладка в текущем окне</span></div></div>`;
   h+=`<div class="s"><h3>Вкладки в Toolbelt</h3>${Object.keys(TABS).map(k=>`<label class="row"><input type="checkbox" data-t="${k}" ${C.tabs[k]?"checked":""} > ${e(TABS[k])}</label>`).join("")}
    <label class="row" style="margin-top:6px"><input type="checkbox" id="autoshow" ${C.auto_show_toolbelt!==false?"checked":""}> открывать Toolbelt в каждом новом окне</label>
+   <label class="row"><input type="checkbox" id="autosave" ${C.autosave!==false?"checked":""}> автосохранение снимка всех окон раз в 5 минут</label>
    <label class="f">префикс в названии, чтобы отличать от встроенных вкладок iTerm</label><input type="text" id="prefix" value="${e(C.title_prefix)}" style="width:80px">
    <div class="mut">изменения вкладок применяются перезапуском, он произойдёт сам после сохранения</div></div>`;
   h+=`<div class="s"><h3>Проверки репозитория</h3><div class="mut">Свои строки во вкладке «Git и PR»: если в корне репо есть <code>file</code>, выполняется <code>cmd</code>; код 0 зелёный, иначе красный.</div>
@@ -72,9 +73,9 @@ function collect(){const $=id=>document.getElementById(id);
 async function save(quiet){const $=id=>document.getElementById(id);const msg=$("msg");
   collect();
   document.querySelectorAll("[data-t]").forEach(n=>C.tabs[n.dataset.t]=n.checked);
-  C.title_prefix=$("prefix").value;C.auto_show_toolbelt=$("autoshow").checked;
+  C.title_prefix=$("prefix").value;C.auto_show_toolbelt=$("autoshow").checked;C.autosave=$("autosave").checked;
   let checks;try{checks=JSON.parse($("checks").value||"[]");if(!Array.isArray(checks))throw 0}catch(_){msg.innerHTML='<span class="bad">проверки: нужен JSON-массив</span>';return}
-  const body={auto_show_toolbelt:C.auto_show_toolbelt,open_in:C.open_in,title_prefix:C.title_prefix,onboarded:C.onboarded,agents:C.agents,tabs:C.tabs,repo_checks:checks};
+  const body={autosave:C.autosave,auto_show_toolbelt:C.auto_show_toolbelt,open_in:C.open_in,title_prefix:C.title_prefix,onboarded:C.onboarded,agents:C.agents,tabs:C.tabs,repo_checks:checks};
   const r=await (await fetch("/settings/save",{method:"POST",headers:{"X-Toolbelt":"1","Content-Type":"application/json"},body:JSON.stringify(body)})).text();
   if(r==="restart"){msg.innerHTML='<span class="warn">перезапускаю, вкладки обновятся через пару секунд…</span>';setTimeout(()=>location.reload(),4000)}
   else if(r==="ok"){msg.innerHTML=quiet?"":'<span class="ok">сохранено</span>';if(!quiet)setTimeout(()=>msg.textContent="",2500)}
