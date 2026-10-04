@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Останавливает и убирает автостарт. Конфиг и venv не трогает: путь печатается в конце.
+# Stops the service and removes autostart. Leaves config and venv alone; their path is printed at the end.
 set -euo pipefail
 LABEL="dev.iterm-toolbelt"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 if [ -f "$PLIST" ]; then
   mv "$PLIST" "$PLIST.removed"
-  echo "автостарт убран ($PLIST.removed)"
+  echo "autostart removed ($PLIST.removed)"
 fi
-echo "конфиг и venv остались в ${ITERM_TOOLBELT_HOME:-$HOME/.config/iterm-toolbelt}, удали руками, если не нужны"
+echo "config and venv are left in ${ITERM_TOOLBELT_HOME:-$HOME/.config/iterm-toolbelt}; delete them by hand if not needed"

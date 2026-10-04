@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""iterm-toolbelt: вкладки Toolbelt iTerm2 для работы с ИИ-агентами.
+"""iterm-toolbelt: iTerm2 Toolbelt tabs for working with AI coding agents.
 
-Вкладки (View → Toolbelt):
-  ◆ Git и PR         ветка, отставание, изменённые файлы с диффом, PR и CI, ворктри
-  ◆ Агент: действия  что Claude Code делает в активной панели: команды, правки, чтение
-  ◆ Сессии           сессии Claude Code и Codex: проекты, восстановление, активные агенты
-  Настройки (⚙ во вкладке «Сессии»): прокси и флаги агентов, вкладки, проверки репо
+Tabs (View → Toolbelt):
+  ◆ Git & PR         branch, ahead/behind, changed files with diffs, PR and CI, worktrees
+  ◆ Agent actions    what Claude Code is doing in the active pane: commands, edits, reads
+  ◆ Sessions         Claude Code and Codex sessions: projects, resume, running agents
+  Settings (⚙ in the Sessions tab): agent proxy and flags, tabs, repo checks
 
-Страницы отдаёт HTTP-сервер на 127.0.0.1 (порт из конфига), iTerm2 показывает их во
-вкладках Toolbelt. Связь с iTerm2 (активная панель, новые окна) идёт через его Python API.
-Конфиг: ~/.config/iterm-toolbelt/config.json.
+Pages are served by an HTTP server on 127.0.0.1 (port from the config) and shown by iTerm2
+in Toolbelt tabs. Everything iTerm-related (active pane, new windows) goes through its Python API.
+Config: ~/.config/iterm-toolbelt/config.json.
 """
 import asyncio
 import copy
@@ -41,13 +41,13 @@ DEFAULTS = {
         "claude": {"prefix": "", "flags": "", "skip_permissions": False},
         "codex": {"prefix": "", "flags": ""},
     },
-    # Свои проверки во вкладке «Git и PR»: если в корне репо есть file, выполняется cmd.
-    # Код 0 рисуется зелёным, остальные красным.
+    # Custom checks in the Git & PR tab: if `file` exists in the repo root, `cmd` is run.
+    # Exit code 0 is shown green, anything else red.
     "repo_checks": [],
-    # открывать боковую панель Toolbelt в каждом новом окне iTerm (один раз на окно:
-    # если скрыть руками, больше не лезет)
+    # show the Toolbelt in every new iTerm window (once per window:
+    # if you hide it by hand, it stays hidden)
     "auto_show_toolbelt": True,
-    # снимок всех окон раз в 5 минут в ~/.config/itermsnap/snaps (формат TermDeck)
+    # snapshot of all windows every 5 minutes into ~/.config/itermsnap/snaps (TermDeck format)
     "autosave": True,
     "onboarded": False,
 }
@@ -77,7 +77,7 @@ def save_config(cfg: dict):
     tmp = CONFIG_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
-    os.chmod(tmp, 0o600)  # там может быть прокси с паролем
+    os.chmod(tmp, 0o600)  # may contain a proxy with a password
     os.replace(tmp, CONFIG_FILE)
 
 
@@ -90,7 +90,7 @@ NOPROXY_ENV["GH_PROMPT_DISABLED"] = "1"
 NOPROXY_ENV["GIT_TERMINAL_PROMPT"] = "0"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
-STATE = {"session_id": None, "session_name": "", "cwd": None, "agent": None}
+STATE = {"session_id": None, "session_name": "", "cwd": None, "agent": None, "tty": ""}
 CONN: dict = {}
 CACHE: dict[str, tuple[float, object]] = {}
 _RUNNING: set[str] = set()
@@ -126,7 +126,7 @@ async def cached(key: str, ttl: float, fn):
 
 
 def cached_bg(key: str, ttl: float, fn):
-    """Медленное не держит ответ страницы: отдаём что есть, устаревшее обновляем в фоне."""
+    """Slow calls never block a page: return what we have, refresh stale values in the background."""
     hit = CACHE.get(key)
     now = time.monotonic()
     if (not hit or now - hit[0] >= ttl) and key not in _RUNNING:
@@ -156,11 +156,11 @@ def mask(s: str) -> str:
     return SECRET.sub(rep, s or "")
 
 
-# ─────────────── активная панель iTerm ───────────────
+# ─────────────── active iTerm pane ───────────────
 
 async def session_cwd(session) -> str | None:
-    """Папка панели: переменная path (shell integration), иначе cwd процесса на переднем
-    плане, иначе cwd шелла."""
+    """Pane directory: the `path` variable (shell integration), else the cwd of the
+    foreground process, else the shell's cwd."""
     try:
         path = await session.async_get_variable("path")
         if path and os.path.isdir(path):
@@ -182,8 +182,8 @@ async def session_cwd(session) -> str | None:
 
 
 async def session_agent(session) -> dict | None:
-    """claude, запущенный в этой панели: процесс на её tty, у которого есть
-    ~/.claude/sessions/<pid>.json (там sessionId и cwd)."""
+    """claude running in this pane: a process on its tty that has
+    ~/.claude/sessions/<pid>.json (sessionId and cwd live there)."""
     try:
         tty = await session.async_get_variable("tty")
     except Exception:  # noqa: BLE001
@@ -215,11 +215,15 @@ async def refresh_session(app, session_id: str | None):
         STATE["session_name"] = (await session.async_get_variable("name")) or session.name or ""
     except Exception:  # noqa: BLE001
         STATE["session_name"] = session.name or ""
+    try:
+        STATE["tty"] = os.path.basename((await session.async_get_variable("tty")) or "")
+    except Exception:  # noqa: BLE001
+        STATE["tty"] = ""
     STATE["cwd"] = await session_cwd(session)
     STATE["agent"] = await session_agent(session)
 
 
-# ─────────────── вкладка «Git и PR» ───────────────
+# ─────────────── Git & PR tab ───────────────
 
 async def git_local(root: str) -> dict:
     _, branch = await run(["git", "rev-parse", "--abbrev-ref", "HEAD"], root)
@@ -236,8 +240,8 @@ async def git_local(root: str) -> dict:
         rc, ab = await run(["git", "rev-list", "--left-right", "--count", f"{upstream}...HEAD"], root)
         if rc == 0 and ab.split():
             behind_up, ahead_up = (int(x) for x in ab.split()[:2])
-    # без -uall: неотслеживаемая папка приходит одной строкой, иначе логи инструментов
-    # забивают весь список
+    # no -uall: an untracked dir comes as one line, otherwise tool logs
+    # flood the whole list
     _, st = await run(["git", "status", "--porcelain=v1"], root)
     files = [{"st": line[:2], "path": line[3:]} for line in st.splitlines() if len(line) > 3]
     files.sort(key=lambda f: (f["st"] == "??", f["path"]))
@@ -249,7 +253,7 @@ async def git_local(root: str) -> dict:
 
 
 async def maybe_fetch(root: str):
-    """Тихий fetch раз в 5 минут, чтобы «отстаёт от main» не врало."""
+    """Quiet fetch every 5 minutes so "behind main" stays honest."""
     now = time.monotonic()
     if now - _FETCHED.get(root, 0) < 300:
         return
@@ -369,23 +373,23 @@ async def file_diff(path: str) -> str:
     root = root.strip()
     _, st = await run(["git", "status", "--porcelain=v1", "--", path], root)
     if not st.strip():
-        return "(нет изменений)"
+        return "(no changes)"
     if st.startswith("??") and path.endswith("/"):
         _, ls = await run(["git", "ls-files", "--others", "--exclude-standard", "--", path], root)
         names = ls.splitlines()
-        return f"неотслеживаемая папка, файлов: {len(names)}\n" + "\n".join(names[:300])
+        return f"untracked directory, files: {len(names)}\n" + "\n".join(names[:300])
     if st.startswith("??"):
         try:
             with open(os.path.join(root, path), "r", encoding="utf-8", errors="replace") as f:
                 body = f.read(200_000)
             return "".join("+" + l + "\n" for l in body.splitlines())
         except OSError as e:
-            return f"(не прочитать: {e})"
+            return f"(cannot read: {e})"
     _, d = await run(["git", "diff", "HEAD", "--no-color", "--", path], root, timeout=10)
-    return d[:400_000] or "(дифф пустой)"
+    return d[:400_000] or "(empty diff)"
 
 
-# ─────────────── вкладка «Агент: действия» ───────────────
+# ─────────────── Agent actions tab ───────────────
 
 TRANSCRIPTS: dict[str, dict] = {}
 
@@ -432,13 +436,13 @@ def _detail(name: str, inp: dict) -> str:
             parts += ["+" + l for l in (ed.get("new_string") or "").splitlines()] + ["@@"]
         return "\n".join(parts)
     if name == "Write":
-        return "\n".join(["@@ " + g("file_path", "") + " (новый/перезаписан)"] +
+        return "\n".join(["@@ " + g("file_path", "") + " (new/overwritten)"] +
                          ["+" + l for l in (g("content") or "").splitlines()[:400]])
     return json.dumps(inp, ensure_ascii=False, indent=1)[:20000]
 
 
 def read_transcript(path: str) -> dict:
-    """Дочитывает jsonl с прошлого места, собирает tool_use и их результат."""
+    """Reads the jsonl from where it stopped last time, pairs tool_use with its result."""
     t = TRANSCRIPTS.setdefault(path, {"off": 0, "items": [], "idx": {}})
     try:
         size = os.path.getsize(path)
@@ -505,7 +509,7 @@ def agent_item(i: int) -> str:
     return t["items"][i]["detail"]
 
 
-# ─────────────── вкладка «Сессии» ───────────────
+# ─────────────── Sessions tab ───────────────
 
 SCAN: dict[str, tuple[float, dict | None]] = {}
 SCAN_FILE = os.path.join(CONFIG_DIR, "scan-cache.json")
@@ -528,8 +532,8 @@ def _clean_title(t: str) -> str:
 
 
 def _read_head(path: str, max_lines: int = 400, need: tuple = ()) -> list:
-    """Первые строки jsonl, не больше 512 КБ. need: разбирать только строки с этими
-    байтами (строки Codex бывают по сотне КБ, json.loads на них дорогой)."""
+    """First lines of a jsonl, at most 512 KB. need: parse only lines containing these
+    bytes (Codex lines can be hundreds of KB, json.loads on them is expensive)."""
     out, budget = [], 512 * 1024
     try:
         with open(path, "rb") as f:
@@ -549,7 +553,7 @@ def _read_head(path: str, max_lines: int = 400, need: tuple = ()) -> list:
 
 
 def _tail_title(path: str) -> str:
-    """ai-title/summary Claude Code пишет по ходу сессии: берём последний из хвоста."""
+    """Claude Code writes ai-title/summary as the session goes: take the last one from the tail."""
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
@@ -606,8 +610,8 @@ def _scan_codex(path: str) -> dict | None:
 
 
 def _scan_all() -> list:
-    """stat всех файлов сессий, разбор только новых/изменённых. Кэш лежит на диске:
-    после перезапуска заново читаются только изменённые."""
+    """stat every session file, parse only new/changed ones. The cache lives on disk:
+    after a restart only changed files are read again."""
     if not SCAN and os.path.isfile(SCAN_FILE):
         try:
             with open(SCAN_FILE) as f:
@@ -650,7 +654,7 @@ def _scan_all() -> list:
 
 
 async def _active_agents() -> list:
-    """Живые claude (по ~/.claude/sessions/<pid>.json) и codex (по процессам)."""
+    """Running claude (via ~/.claude/sessions/<pid>.json) and codex (via processes)."""
     out = []
     for meta in glob.glob(os.path.join(CLAUDE_DIR, "sessions", "*.json")):
         try:
@@ -684,14 +688,14 @@ async def sessions_state() -> dict:
     rows = cached_bg("scan:sessions", 20, lambda: asyncio.to_thread(_scan_all))
     active = cached_bg("scan:active", 4, _active_agents) or []
     live = {a["id"] for a in active if a.get("id")}
-    return {"v": BOOT, "cwd": STATE["cwd"] or "", "session": STATE["session_name"], "ok": rows is not None,
+    return {"v": BOOT, "cwd": STATE["cwd"] or "", "session": STATE["session_name"], "tty": STATE["tty"], "ok": rows is not None,
             "rows": [dict(r, live=r["id"] in live) for r in (rows or [])], "active": active,
             "open_in": CFG.get("open_in", "window"),
             "skip": bool(CFG["agents"]["claude"].get("skip_permissions"))}
 
 
 def agent_command(tool: str, sid: str, skip: bool) -> str | None:
-    """sid пустой = новая сессия. Префикс (например HTTPS_PROXY=...) и флаги из конфига."""
+    """Empty sid = new session. Prefix (e.g. HTTPS_PROXY=...) and flags come from the config."""
     q = shlex.quote(sid) if sid else ""
     a = CFG["agents"].get("claude" if tool in ("claude", "claude-ext") else tool, {})
     if tool in ("claude", "claude-ext"):
@@ -713,15 +717,15 @@ def agent_command(tool: str, sid: str, skip: bool) -> str | None:
 async def open_agent(q: dict) -> str:
     sid, tool, d = q.get("id", ""), q.get("tool", ""), q.get("dir", "")
     if sid and not SAFE_ID.match(sid):
-        return "плохой id"
+        return "bad id"
     cmd = agent_command(tool, sid, q.get("skip") == "1")
     if not cmd:
-        return f"не умею запускать {tool}"
+        return f"cannot launch {tool}"
     if d and not os.path.isdir(d):
-        return f"папки нет: {d}"
+        return f"no such directory: {d}"
     conn = CONN.get("c")
     if conn is None:
-        return "нет связи с iTerm"
+        return "no connection to iTerm"
     app = await iterm2.async_get_app(conn)
     cur = app.current_terminal_window
     if q.get("where") == "tab" and cur is not None:
@@ -730,8 +734,8 @@ async def open_agent(q: dict) -> str:
     else:
         w = await iterm2.Window.async_create(conn)
         win_id, tab_id = w.window_id, w.current_tab.tab_id
-    # новое окно отдаёт сессию не сразу, а первые доли секунды там служебный bash:
-    # берём сессию заново по id и ждём шелл пользователя, иначе текст теряется
+    # a new window does not hand over its session right away, and a helper bash runs first:
+    # re-fetch the session by id and wait for the user's shell, otherwise the text is lost
     shell = os.path.basename(os.environ.get("SHELL", "zsh"))
     sess = None
     for _ in range(50):
@@ -746,7 +750,7 @@ async def open_agent(q: dict) -> str:
         except Exception:  # noqa: BLE001
             sess = None
     if not sess:
-        return "iTerm не отдал новую сессию"
+        return "iTerm did not return the new session"
     await asyncio.sleep(0.3)
     await sess.async_send_text((f"cd {shlex.quote(d)} && " if d else "") + cmd + "\n")
     await sess.async_activate(select_tab=True, order_window_front=True)
@@ -754,10 +758,10 @@ async def open_agent(q: dict) -> str:
 
 
 async def focus_tty(tty: str) -> str:
-    """Перейти в панель iTerm, где крутится агент (по tty)."""
+    """Switch to the iTerm pane where the agent runs (by tty)."""
     conn = CONN.get("c")
     if conn is None or not tty:
-        return "нет связи с iTerm"
+        return "no connection to iTerm"
     app = await iterm2.async_get_app(conn)
     for w in app.terminal_windows:
         for t in w.tabs:
@@ -770,21 +774,21 @@ async def focus_tty(tty: str) -> str:
                     await s.async_activate(select_tab=True, order_window_front=True)
                     await app.async_activate()
                     return "ok"
-    return "это окно не в iTerm"
+    return "this window is not in iTerm"
 
 
-# ─────────────── снимки окон (формат TermDeck) ───────────────
+# ─────────────── window snapshots (TermDeck format) ───────────────
 
 SNAP_DIR = os.path.expanduser(os.getenv("ITERMSNAP_HOME", "~/.config/itermsnap")) + "/snaps"
 SAFE_SNAP = re.compile(r"^[\w .:-]{1,60}$")
-AUTO_PREFIX = "авто-"
+AUTO_PREFIX = "auto-"
 AUTO_KEEP = 20
 _LAST_AUTO = {"sig": None}
 
 
 async def _pane_info(session) -> dict | None:
-    """Папка панели и агент в ней. id сессии claude берём точно по процессу на tty
-    (~/.claude/sessions/<pid>.json), а не по самому свежему файлу в папке."""
+    """Pane directory and the agent in it. The claude session id comes from the process on
+    the tty (~/.claude/sessions/<pid>.json), not from the newest file in the directory."""
     agent = await session_agent(session)
     if agent and agent.get("cwd"):
         return {"cwd": agent["cwd"], "session_id": agent.get("sid"), "agent": "claude"}
@@ -795,8 +799,8 @@ async def _pane_info(session) -> dict | None:
 
 
 async def capture_windows(app, only_current: bool = False) -> list:
-    """Окна → [{title, split, panes:[{cwd, session_id, agent}]}], формат TermDeck.
-    only_current: только окно, где сейчас фокус."""
+    """Windows → [{title, split, panes:[{cwd, session_id, agent}]}], TermDeck format.
+    only_current: only the window that has focus."""
     tabs = []
     wins = [app.current_terminal_window] if only_current else app.terminal_windows
     for w in [x for x in wins if x]:
@@ -830,7 +834,7 @@ def snap_list() -> list:
         except (OSError, ValueError):
             continue
         name = os.path.basename(p)[:-5]
-        out.append({"name": name, "mtime": int(os.path.getmtime(p) * 1000), "auto": name.startswith((AUTO_PREFIX, "автосохранение")),
+        out.append({"name": name, "mtime": int(os.path.getmtime(p) * 1000), "auto": name.startswith((AUTO_PREFIX, "autosave")),
                     "tabs": [{"title": t.get("title") or os.path.basename((t.get("panes") or [{}])[0].get("cwd", "")),
                               "split": t.get("split", "vertical"),
                               "panes": len(t.get("panes") or []),
@@ -855,19 +859,19 @@ def _write_snap(name: str, tabs: list):
 
 async def snap_save(name: str, only_current: bool = False) -> str:
     if not SAFE_SNAP.match(name or ""):
-        return "имя: буквы, цифры, пробел, . : - до 60 знаков"
+        return "name: letters, digits, space, . : - up to 60 chars"
     app = await iterm2.async_get_app(CONN["c"])
     tabs = await capture_windows(app, only_current)
     if not tabs:
-        return "нечего сохранять: окон с папками нет"
+        return "nothing to save: no windows with directories"
     _write_snap(name, tabs)
     return "ok"
 
 
 async def autosave_loop(app):
-    """Раз в 5 минут снимок всех окон, только если что-то поменялось и есть хоть один
-    агент. Хранятся последние AUTO_KEEP: закрытые разом окна не затрут снимок пустым."""
-    delay = 60   # первый снимок через минуту после старта, дальше раз в 5 минут
+    """Every 5 minutes, snapshot all windows if something changed and at least one agent
+    runs. Keeps the last AUTO_KEEP, so closing all windows at once won't overwrite a good one."""
+    delay = 60   # first snapshot a minute after start, then every 5 minutes
     while True:
         await asyncio.sleep(delay)
         delay = 300
@@ -910,15 +914,15 @@ async def _wait_shell(app, session_id: str):
 
 async def snap_restore(name: str, skip: bool) -> str:
     if not SAFE_SNAP.match(name or ""):
-        return "плохое имя"
+        return "bad name"
     try:
         with open(os.path.join(SNAP_DIR, name + ".json")) as f:
             tabs = json.load(f)
     except (OSError, ValueError):
-        return "снимка нет"
+        return "no such snapshot"
     conn = CONN["c"]
     app = await iterm2.async_get_app(conn)
-    # профиль TermDeck (если есть) не даёт claude перебивать имена вкладок
+    # the TermDeck profile (if present) keeps claude from overwriting tab names
     profile = "TermDeck" if os.path.exists(os.path.expanduser(
         "~/Library/Application Support/iTerm2/DynamicProfiles/termdeck.json")) else None
     win = None
@@ -953,7 +957,7 @@ async def snap_restore(name: str, skip: bool) -> str:
     return "ok"
 
 
-# ─────────────── вкладка «Настройки» ───────────────
+# ─────────────── Settings ───────────────
 
 def settings_state() -> dict:
     return {"v": BOOT, "version": VERSION, "config": CFG, "config_file": CONFIG_FILE}
@@ -963,9 +967,9 @@ def settings_save(body: bytes) -> str:
     try:
         new = json.loads(body or b"{}")
     except ValueError:
-        return "не JSON"
+        return "not JSON"
     if not isinstance(new, dict):
-        return "не объект"
+        return "not an object"
     cfg = load_config()
     restart = False
     for k in ("open_in", "title_prefix", "onboarded", "auto_show_toolbelt", "autosave"):
@@ -1008,8 +1012,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         qs = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         m = re.search(rb"(?i)\r\ncontent-length:\s*(\d+)", head)
         body = await reader.readexactly(min(int(m.group(1)), 1_000_000)) if m else b""
-        # всё, что меняет состояние: только POST с нашим заголовком. Чужая страница в
-        # браузере не может послать такой запрос без preflight, а его мы не пропускаем.
+        # anything that changes state: POST with our header only. A foreign page in the
+        # browser cannot send that without a preflight, and we never pass the preflight.
         mutating = method == "POST" and re.search(rb"(?i)\r\nx-toolbelt:\s*1", head) is not None
         ctype, status, restart = "application/json", b"200 OK", False
         if u.path in PAGES:
@@ -1036,19 +1040,19 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             try:
                 res = await open_agent(qs)
             except Exception as ex:  # noqa: BLE001
-                res = f"ошибка: {type(ex).__name__}: {ex}"
+                res = f"error: {type(ex).__name__}: {ex}"
             print(time.strftime("%H:%M:%S"), "open", qs.get("tool"), qs.get("id") or "(new)", "->", res, flush=True)
             out, ctype = res.encode(), "text/plain; charset=utf-8"
         elif u.path == "/sessions/focus":
             tty = qs.get("tty", "")
-            res = await focus_tty(tty) if re.fullmatch(r"ttys?\d+", tty) else "плохой tty"
+            res = await focus_tty(tty) if re.fullmatch(r"ttys?\d+", tty) else "bad tty"
             out, ctype = res.encode(), "text/plain; charset=utf-8"
         elif u.path in ("/snaps/save", "/snaps/restore"):
             try:
                 res = await (snap_save(qs.get("name", ""), qs.get("scope") == "window") if u.path == "/snaps/save"
                              else snap_restore(qs.get("name", ""), qs.get("skip") == "1"))
             except Exception as ex:  # noqa: BLE001
-                res = f"ошибка: {type(ex).__name__}: {ex}"
+                res = f"error: {type(ex).__name__}: {ex}"
             print(time.strftime("%H:%M:%S"), u.path, qs.get("name"), "->", res, flush=True)
             out, ctype = res.encode(), "text/plain; charset=utf-8"
         elif u.path == "/settings/save":
@@ -1062,7 +1066,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
                      b"\r\nConnection: close\r\n\r\n" + out)
         await writer.drain()
         if restart:
-            # вкладки регистрируются при старте: выходим, launchd поднимет заново
+            # tabs are registered at startup: exit and let launchd start us again
             asyncio.get_running_loop().call_later(0.5, lambda: os._exit(0))
     except Exception:  # noqa: BLE001
         pass
@@ -1077,8 +1081,8 @@ SHOWN_WINDOWS: set[str] = set()
 
 
 async def ensure_toolbelt(app, connection):
-    """Показать Toolbelt в окне, которое видим впервые. Меню «Show Toolbelt» работает
-    с текущим окном и показывает галочку, так что лишний раз не переключаем."""
+    """Show the Toolbelt in a window we see for the first time. The "Show Toolbelt" menu item
+    acts on the current window and reports a checkmark, so we never toggle needlessly."""
     if not CFG.get("auto_show_toolbelt", True):
         return
     w = app.current_terminal_window
@@ -1093,8 +1097,8 @@ async def ensure_toolbelt(app, connection):
         pass
 
 
-TABS = [("git", "Git и PR", "/"), ("agent", "Агент: действия", "/agent"),
-        ("sessions", "Сессии", "/sessions"), ("settings", "Настройки", "/settings")]
+TABS = [("git", "Git & PR", "/"), ("agent", "Agent actions", "/agent"),
+        ("sessions", "Sessions", "/sessions"), ("settings", "Settings", "/settings")]
 
 
 async def main(connection):
@@ -1113,7 +1117,7 @@ async def main(connection):
     await ensure_toolbelt(app, connection)
 
     async def poll():
-        # папка панели меняется и без смены фокуса (cd, новый ворктри, запуск агента)
+        # the pane directory changes without a focus change too (cd, new worktree, agent start)
         while True:
             await asyncio.sleep(5)
             await refresh_session(app, STATE["session_id"])

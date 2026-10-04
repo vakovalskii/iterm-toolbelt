@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Установка iterm-toolbelt: venv с модулем iterm2, LaunchAgent (автостарт при входе),
-# конфиг по умолчанию. Повторный запуск безопасен: обновит venv и перезапустит сервис.
+# Installs iterm-toolbelt: a venv with the iterm2 module, a LaunchAgent (autostart at login)
+# and a default config. Safe to re-run: updates the venv and restarts the service.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,10 +10,10 @@ LABEL="dev.iterm-toolbelt"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME_DIR/toolbelt.log"
 
-[ "$(uname)" = "Darwin" ] || { echo "нужен macOS"; exit 1; }
-[ -d "/Applications/iTerm.app" ] || echo "! iTerm2 не найден в /Applications, продолжаю"
+[ "$(uname)" = "Darwin" ] || { echo "macOS required"; exit 1; }
+[ -d "/Applications/iTerm.app" ] || echo "! iTerm2 not found in /Applications, continuing"
 PY="$(command -v python3 || true)"
-[ -n "$PY" ] || { echo "нужен python3 (brew install python)"; exit 1; }
+[ -n "$PY" ] || { echo "python3 required (brew install python)"; exit 1; }
 
 mkdir -p "$HOME_DIR" "$HOME/Library/LaunchAgents"
 if [ ! -x "$VENV/bin/python" ]; then
@@ -25,7 +25,7 @@ fi
 if [ ! -f "$HOME_DIR/config.json" ]; then
   cp "$REPO/config.example.json" "$HOME_DIR/config.json"
   chmod 600 "$HOME_DIR/config.json"
-  echo "· конфиг: $HOME_DIR/config.json"
+  echo "· config: $HOME_DIR/config.json"
 fi
 
 cat > "$PLIST.tmp" <<EOF
@@ -54,14 +54,14 @@ launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
 cat <<EOF
 
-Готово. Осталось в iTerm2:
-  1. Settings → General → Magic → Enable Python API (если ещё не включён).
-     При первом запуске iTerm спросит разрешение для скрипта — разреши.
-  2. View → Toolbelt → отметь вкладки «◆ Git и PR», «◆ Агент: действия», «◆ Сессии».
-     Показать/скрыть Toolbelt: ⌘⇧B.
-  3. Во вкладке «◆ Сессии» кнопка ⚙: знакомство и прокси для агентов.
+Done. Left to do in iTerm2:
+  1. Settings → General → Magic → Enable Python API (if not enabled yet).
+     On first run iTerm asks to allow the script: allow it.
+  2. View → Toolbelt → tick "◆ Git & PR", "◆ Agent actions", "◆ Sessions".
+     Show/hide the Toolbelt: ⌘⇧B.
+  3. The ⚙ button in "◆ Sessions": intro and proxy settings for agents.
 
-Лог: $LOG
-Перезапуск: launchctl kickstart -k gui/\$(id -u)/$LABEL
-Удаление: $REPO/uninstall.sh
+Log: $LOG
+Restart: launchctl kickstart -k gui/\$(id -u)/$LABEL
+Uninstall: $REPO/uninstall.sh
 EOF

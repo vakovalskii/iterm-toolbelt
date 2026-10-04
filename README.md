@@ -1,57 +1,55 @@
 # iterm-toolbelt
 
-Вкладки для боковой панели **Toolbelt** в iTerm2, сделанные под работу с ИИ-агентами (Claude Code, Codex). Всё смотрит на активную панель терминала: переключился на другую вкладку iTerm — панель показывает уже её.
+Tabs for the iTerm2 **Toolbelt** sidebar, built for working with AI coding agents (Claude Code, Codex). Everything follows the active terminal pane: switch to another iTerm tab and the sidebar shows that one.
 
-[English below](#english)
+![The Toolbelt next to the terminal: agent actions, window snapshots, git](docs/overview.jpg)
 
-![Toolbelt рядом с терминалом: действия агента, снимки окон, git](docs/overview.jpg)
+<p><img src="docs/sessions-start.jpg" width="49%" alt="Sessions: pick an agent"> <img src="docs/sessions-active.jpg" width="49%" alt="Sessions: running agents"></p>
 
-<p><img src="docs/sessions-start.jpg" width="49%" alt="Сессии: выбор агента"> <img src="docs/sessions-active.jpg" width="49%" alt="Сессии: запущенные агенты"></p>
-
-| вкладка | что показывает |
+| tab | what it shows |
 |---|---|
-| **◆ Git и PR** | ветка, отставание от `origin/main` и upstream, изменённые файлы с диффом по клику, PR текущей ветки и CI (`gh`), мои открытые PR, ворктри, свои проверки репо |
-| **◆ Агент: действия** | живая лента того, что делает Claude Code в этой панели: bash-команды, правки файлов с диффом, чтение, поиск, агенты, веб, MCP. Упавшие вызовы помечены, пароли и токены в командах скрыты |
-| **◆ Сессии** | Claude Code и Codex: выбор агента → проекты плитками → сессии проекта с кнопкой «Восстановить» (новое окно или вкладка iTerm), «＋ новая» сессия в проекте, список запущенных агентов с переходом в их окно, **снимки окон** |
-| ⚙ настройки | открываются из вкладки «Сессии»: знакомство, префикс (прокси) и флаги для запуска агентов, где открывать сессии, какие вкладки включены, автопоказ Toolbelt, свои проверки репо |
+| **◆ Git & PR** | branch, ahead/behind `origin/main` and upstream, changed files with a diff on click, the branch PR and its CI (`gh`), your open PRs, worktrees, custom repo checks |
+| **◆ Agent actions** | a live feed of what Claude Code does in this pane: bash commands, file edits with diffs, reads, searches, subagents, web, MCP. Failed calls are marked, passwords and tokens in commands are masked |
+| **◆ Sessions** | Claude Code and Codex: pick an agent → project tiles → project sessions with **Resume** (new iTerm window or tab), **＋ new** session in a project, running agents with a jump to their pane (the focused one is highlighted), **window snapshots** |
+| ⚙ settings | opened from the Sessions tab: intro, prefix (e.g. a proxy) and flags for launching agents, where to open sessions, which tabs are on, auto-show of the Toolbelt, custom repo checks |
 
-## Установка
+## Install
 
 ```bash
 git clone https://github.com/vakovalskii/iterm-toolbelt ~/iterm-toolbelt
 ~/iterm-toolbelt/install.sh
 ```
 
-Дальше в iTerm2:
+Then in iTerm2:
 
-1. **Settings → General → Magic → Enable Python API.** При первом запуске iTerm спросит разрешение для скрипта.
-2. **View → Toolbelt** и отметить вкладки с «◆». Показать или скрыть Toolbelt: ⌘⇧B.
-3. Во вкладке **◆ Сессии** нажать **⚙**: там короткое знакомство и настройка запуска агентов (например прокси).
+1. **Settings → General → Magic → Enable Python API.** On first run iTerm asks to allow the script.
+2. **View → Toolbelt** and tick the tabs starting with «◆». Show or hide the Toolbelt: ⌘⇧B. New windows open the Toolbelt by themselves.
+3. In **◆ Sessions** press **⚙**: a short intro and agent launch settings (e.g. a proxy).
 
-Нужны macOS, iTerm2 3.3+ (проверено на 3.7), python3. Для PR и CI нужен залогиненный [`gh`](https://cli.github.com/).
+Requires macOS, iTerm2 3.3+ (tested on 3.7) and python3. PR and CI info needs a logged-in [`gh`](https://cli.github.com/).
 
-`install.sh` создаёт venv в `~/.config/iterm-toolbelt/venv`, конфиг `~/.config/iterm-toolbelt/config.json` и LaunchAgent `dev.iterm-toolbelt`. Сервис стартует при входе в систему и перезапускается при падении. Обновление: `git pull && ./install.sh`. Удаление: `./uninstall.sh`.
+`install.sh` creates a venv in `~/.config/iterm-toolbelt/venv`, the config `~/.config/iterm-toolbelt/config.json` and the LaunchAgent `dev.iterm-toolbelt`. The service starts at login and restarts if it crashes. Update: `git pull && ./install.sh`. Uninstall: `./uninstall.sh`.
 
-## Как устроено
+## How it works
 
-- Один процесс на Python: маленький HTTP-сервер на `127.0.0.1` отдаёт страницы из `pages/`, iTerm2 показывает их во вкладках Toolbelt (`iterm2.tool.async_register_web_view_tool`). Через Python API iTerm2 же узнаём активную панель (`FocusMonitor`), её папку и tty, открываем окна для восстановления сессий.
-- **Агент: действия.** Процесс `claude` на tty панели → `~/.claude/sessions/<pid>.json` (там id сессии) → транскрипт `~/.claude/projects/<папка>/<id>.jsonl`, который дочитывается с прошлого места.
-- **Сессии.** Сканируются `~/.claude/projects/*/*.jsonl` и `~/.codex/sessions/*/*/*/*.jsonl`, из каждого файла разбираются только нужные строки в первых 512 КБ. Результат кэшируется на диск: первый проход на паре тысяч сессий занимает десятки секунд в фоне, дальше читаются только изменённые файлы.
-- В простое процесс занимает около 90 МБ памяти и 0–3% CPU.
-- Всё, что что-то запускает (`/sessions/open`, `/sessions/focus`, `/settings/save`), принимает только POST с заголовком `X-Toolbelt: 1`: чужая страница в браузере такой запрос послать не может.
+- One Python process: a small HTTP server on `127.0.0.1` serves the pages from `pages/`, and iTerm2 shows them as Toolbelt tabs (`iterm2.tool.async_register_web_view_tool`). The same iTerm2 Python API tells us the active pane (`FocusMonitor`), its directory and tty, and opens windows to resume sessions.
+- **Agent actions.** The `claude` process on the pane's tty → `~/.claude/sessions/<pid>.json` (holds the session id) → the transcript `~/.claude/projects/<dir>/<id>.jsonl`, read incrementally from where it stopped.
+- **Sessions.** Scans `~/.claude/projects/*/*.jsonl` and `~/.codex/sessions/*/*/*/*.jsonl`, parsing only the needed lines within the first 512 KB of each file. Results are cached on disk: the first pass over a couple thousand sessions takes tens of seconds in the background, after that only changed files are read.
+- Idle, the process uses about 90 MB of memory and 0–3% CPU.
+- Anything that launches something (`/sessions/open`, `/sessions/focus`, `/snaps/*`, `/settings/save`) accepts only POST with the `X-Toolbelt: 1` header, which a foreign web page cannot send.
 
-## Снимки окон (совместимо с TermDeck)
+## Window snapshots (TermDeck compatible)
 
-Экран «снимки» во вкладке «Сессии»: «Сохранить» снимает текущее окно или все окна iTerm (вкладки, сплиты, имена вкладок, папки, сессии агентов), «Восстановить» поднимает снимок в новом окне: вкладки, сплиты, `cd` и `claude --resume` в каждой панели.
+The "snapshots" screen in Sessions: **Save** captures the current window or all iTerm windows (tabs, splits, tab names, directories, agent sessions), **Restore** brings a snapshot back in a new window: tabs, splits, `cd` and `claude --resume` in every pane.
 
-- Снимки лежат в `~/.config/itermsnap/snaps/` в формате [TermDeck](https://github.com/vakovalskii/termdeck), так что приложение TermDeck и тулбелт видят одни и те же снимки.
-- id сессии берётся точно по процессу `claude` в панели (`~/.claude/sessions/<pid>.json`), а не угадывается по самому свежему файлу в папке.
-- Автосохранение раз в 5 минут (`"autosave": true`): только если что-то поменялось и есть хоть один агент; хранятся последние 20 `авто-*`. Если разом закрылись все окна, последний хороший снимок не затрётся пустым.
-- Если есть динамический профиль iTerm `TermDeck` (запрет смены заголовка), окна поднимаются в нём, и имена вкладок держатся.
+- Snapshots live in `~/.config/itermsnap/snaps/` in the [TermDeck](https://github.com/vakovalskii/termdeck) format, so the TermDeck app and the toolbelt see the same snapshots.
+- The session id is taken from the `claude` process in the pane (`~/.claude/sessions/<pid>.json`), not guessed from the newest file in the directory.
+- Autosave every 5 minutes (`"autosave": true`): only when something changed and at least one agent runs; the last 20 `auto-*` are kept. If all windows close at once, the last good snapshot is not overwritten by an empty one.
+- If an iTerm dynamic profile named `TermDeck` exists (title changes disabled), windows are restored with it and tab names stick.
 
-## Конфиг
+## Config
 
-`~/.config/iterm-toolbelt/config.json` (права 600, в нём может лежать прокси с паролем). Всё правится на странице ⚙ во вкладке «Сессии», руками тоже можно, пример в `config.example.json`.
+`~/.config/iterm-toolbelt/config.json` (mode 600, it may hold a proxy with a password). Everything is editable on the ⚙ page in Sessions, or by hand, see `config.example.json`.
 
 ```json
 {
@@ -61,28 +59,17 @@ git clone https://github.com/vakovalskii/iterm-toolbelt ~/iterm-toolbelt
   },
   "open_in": "window",
   "repo_checks": [
-    {"name": "Контейнеры", "file": "docker-compose.yml", "cmd": "docker compose ps --format '{{.Name}} {{.State}}'", "max_lines": 6}
+    {"name": "Containers", "file": "docker-compose.yml", "cmd": "docker compose ps --format '{{.Name}} {{.State}}'", "max_lines": 6}
   ]
 }
 ```
 
-`repo_checks` — свои строки во вкладке «Git и PR»: если в корне репо есть `file`, выполняется `cmd`, код 0 рисуется зелёным, остальные красным.
+`repo_checks` are your own lines in Git & PR: if `file` exists in the repo root, `cmd` runs; exit code 0 is shown green, anything else red.
 
-## Что уже есть в самом iTerm2
+## What iTerm2 already has
 
-В iTerm2 3.7 появилась своя интеграция с Claude Code: вкладка Session Status, окно Cockpit, Workgroups с диффом и ревью, в 3.7.4 beta ещё и Codex. iterm-toolbelt её не заменяет, а дополняет: лента действий агента из транскрипта, браузер и восстановление сессий Claude Code и Codex, git/PR активной панели.
+iTerm2 3.7 ships its own Claude Code integration: the Session Status tool, the Cockpit window, Workgroups with diff and review, and Codex support in 3.7.4 beta. iterm-toolbelt does not replace it but complements it: an agent action feed from the transcript, a browser for resuming Claude Code and Codex sessions, window snapshots with agent resume, and git/PR for the active pane.
 
-## English
-
-Toolbelt tabs for iTerm2 built for working with AI coding agents (Claude Code, Codex). Everything follows the active pane.
-
-- **Git & PR** — branch, ahead/behind, changed files with diffs, PR + CI via `gh`, your open PRs, worktrees, custom repo checks.
-- **Agent: actions** — live feed of what Claude Code does in the active pane (commands, edits with diffs, reads, searches, MCP), secrets masked.
-- **Sessions** — Claude Code and Codex sessions: pick an agent → project tiles → resume in a new iTerm window/tab, start a new session, list of running agents with "jump to its tab".
-- **Settings** (⚙ in the Sessions tab) — onboarding, command prefix (e.g. proxy) and flags for agents, tabs on/off, custom repo checks.
-
-Install: `git clone https://github.com/vakovalskii/iterm-toolbelt ~/iterm-toolbelt && ~/iterm-toolbelt/install.sh`, then enable the Python API in iTerm2 (Settings → General → Magic) and tick the «◆» tabs in View → Toolbelt (the Toolbelt opens itself in new windows). UI is in Russian for now.
-
-## Лицензия
+## License
 
 MIT

@@ -1,5 +1,5 @@
-<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Настройки</title>
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Settings</title>
 <style>
 :root{--bg:#14161a;--card:#1a1e24;--fg:#d8dce3;--mut:#7d8590;--line:#2a2f37;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:12px/1.5 -apple-system,BlinkMacSystemFont,"SF Mono",Menlo,monospace}
@@ -16,50 +16,50 @@ button{background:#1f2a3a;color:var(--acc);border:1px solid var(--line);border-r
 .step{display:flex;gap:8px;margin:6px 0}.num{flex:none;width:18px;height:18px;border-radius:9px;background:#1f2a3a;color:var(--acc);display:flex;align-items:center;justify-content:center;font-size:10px}
 pre{margin:4px 0 0;font:11px/1.35 "SF Mono",Menlo,monospace;white-space:pre-wrap;word-break:break-all;background:#0e1013;padding:6px;border-radius:4px}
 #bar{position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--line);padding:8px 10px;display:flex;gap:8px;align-items:center}
-</style></head><body><div id="app" class="s mut">загрузка…</div>
-<div id="bar"><a href="/sessions" style="color:var(--acc);text-decoration:none">← к сессиям</a><button class="main" id="save">Сохранить</button><span id="msg" class="mut"></span></div>
+</style></head><body><div id="app" class="s mut">loading…</div>
+<div id="bar"><a href="/sessions" style="color:var(--acc);text-decoration:none">← back to sessions</a><button class="main" id="save">Save</button><span id="msg" class="mut"></span></div>
 <script>
 let C=null, V=null;
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const maskUrl=s=>String(s||"").replace(/(:\/\/[^:\/\s@]+):([^@\s]+)@/g,"$1:***@");
-const TABS={git:"Git и PR",agent:"Агент: действия",sessions:"Сессии",settings:"Настройки"};
+const TABS={git:"Git & PR",agent:"Agent actions",sessions:"Sessions",settings:"Settings"};
 function preview(){const a=C.agents.claude, x=C.agents.codex;
   const cl=[a.prefix,"claude --resume <id>",(a.flags||"").replace("--dangerously-skip-permissions","").trim(),a.skip_permissions?"--dangerously-skip-permissions":""].filter(Boolean).join(" ");
   const cx=[x.prefix,"codex resume <id>",x.flags].filter(Boolean).join(" ");
-  document.getElementById("pv").textContent=maskUrl("cd <папка> && "+cl+"\ncd <папка> && "+cx)}
+  document.getElementById("pv").textContent=maskUrl("cd <dir> && "+cl+"\ncd <dir> && "+cx)}
 function render(d){C=d.config;
   let h="";
-  h+=`<div class="s" id="hello"><h3>Как это работает</h3><div class="card">
-   <div>iterm-toolbelt добавляет в боковую панель iTerm2 вкладки для работы с ИИ-агентами. Они следят за активной панелью терминала.</div>
-   <div class="step"><span class="num">1</span><span><b>Вкладки</b>: меню View → Toolbelt, отметь те, что начинаются с «${e(C.title_prefix)}». Эта страница открывается по ⚙ во вкладке «Сессии». Панель Toolbelt открывается ⌘⇧B.</span></div>
-   <div class="step"><span class="num">2</span><span><b>Git и PR</b>: ветка, отставание от main, изменённые файлы с диффом по клику, PR и CI через <code>gh</code>.</span></div>
-   <div class="step"><span class="num">3</span><span><b>Агент: действия</b>: что Claude Code делает в активной панели: команды, правки с диффом, чтение, поиск. Пароли и токены в командах скрыты.</span></div>
-   <div class="step"><span class="num">4</span><span><b>Сессии</b>: Claude Code и Codex, проекты плитками, «Восстановить» открывает сессию в новом окне, «Активные» переключают на окно с агентом.</span></div>
-   <div class="step"><span class="num">5</span><span>Если агенты ходят через прокси или нужны свои флаги, заполни блок «Агенты» ниже.</span></div>
-   ${C.onboarded?'<div class="ok">знакомство пройдено</div>':'<button id="done">Понятно, дальше</button>'}</div></div>`;
-  h+=`<div class="s" id="agents"><h3>Агенты: запуск при восстановлении</h3>
+  h+=`<div class="s" id="hello"><h3>How it works</h3><div class="card">
+   <div>iterm-toolbelt adds tabs for working with AI coding agents to the iTerm2 Toolbelt. They follow the active terminal pane.</div>
+   <div class="step"><span class="num">1</span><span><b>Tabs</b>: View → Toolbelt, tick the ones starting with "${e(C.title_prefix)}". This page opens from ⚙ in the Sessions tab. Show/hide the Toolbelt with ⌘⇧B.</span></div>
+   <div class="step"><span class="num">2</span><span><b>Git &amp; PR</b>: branch, distance from main, changed files with a diff on click, PR and CI via <code>gh</code>.</span></div>
+   <div class="step"><span class="num">3</span><span><b>Agent actions</b>: what Claude Code does in the active pane: commands, edits with diffs, reads, searches. Passwords and tokens in commands are masked.</span></div>
+   <div class="step"><span class="num">4</span><span><b>Sessions</b>: Claude Code and Codex, projects as tiles, "Resume" opens a session in a new window, "Running" jumps to the window with the agent, snapshots save and restore windows.</span></div>
+   <div class="step"><span class="num">5</span><span>If your agents need a proxy or extra flags, fill in the "Agents" block below.</span></div>
+   ${C.onboarded?'<div class="ok">intro done</div>':'<button id="done">Got it</button>'}</div></div>`;
+  h+=`<div class="s" id="agents"><h3>Agents: how they are launched</h3>
    <div class="card"><b>Claude Code</b>
-    <label class="f">префикс перед командой (например HTTPS_PROXY='http://user:pass@host:port')</label>
-    <div class="row"><input type="password" id="cl_prefix" value="${e(C.agents.claude.prefix)}"><span class="chip" id="show">показать</span></div>
-    <label class="f">флаги после команды</label><input type="text" id="cl_flags" value="${e((C.agents.claude.flags||"").replace("--dangerously-skip-permissions","").trim())}">
-    <label class="row" style="margin-top:6px"><input type="checkbox" id="cl_skip" ${C.agents.claude.skip_permissions?"checked":""}> --dangerously-skip-permissions по умолчанию</label></div>
+    <label class="f">prefix before the command (e.g. HTTPS_PROXY='http://user:pass@host:port')</label>
+    <div class="row"><input type="password" id="cl_prefix" value="${e(C.agents.claude.prefix)}"><span class="chip" id="show">show</span></div>
+    <label class="f">flags after the command</label><input type="text" id="cl_flags" value="${e((C.agents.claude.flags||"").replace("--dangerously-skip-permissions","").trim())}">
+    <label class="row" style="margin-top:6px"><input type="checkbox" id="cl_skip" ${C.agents.claude.skip_permissions?"checked":""}> --dangerously-skip-permissions by default</label></div>
    <div class="card"><b>Codex</b>
-    <label class="f">префикс</label><input type="password" id="cx_prefix" value="${e(C.agents.codex.prefix)}">
-    <label class="f">флаги</label><input type="text" id="cx_flags" value="${e(C.agents.codex.flags)}"></div>
-   <div class="mut">так будет выглядеть команда (пароль скрыт):</div><pre id="pv"></pre></div>`;
-  h+=`<div class="s"><h3>Где открывать сессию</h3><div class="row"><span class="chip ${C.open_in==="window"?"on":""}" data-w="window">новое окно</span><span class="chip ${C.open_in==="tab"?"on":""}" data-w="tab">вкладка в текущем окне</span></div></div>`;
-  h+=`<div class="s"><h3>Вкладки в Toolbelt</h3>${Object.keys(TABS).map(k=>`<label class="row"><input type="checkbox" data-t="${k}" ${C.tabs[k]?"checked":""} > ${e(TABS[k])}</label>`).join("")}
-   <label class="row" style="margin-top:6px"><input type="checkbox" id="autoshow" ${C.auto_show_toolbelt!==false?"checked":""}> открывать Toolbelt в каждом новом окне</label>
-   <label class="row"><input type="checkbox" id="autosave" ${C.autosave!==false?"checked":""}> автосохранение снимка всех окон раз в 5 минут</label>
-   <label class="f">префикс в названии, чтобы отличать от встроенных вкладок iTerm</label><input type="text" id="prefix" value="${e(C.title_prefix)}" style="width:80px">
-   <div class="mut">изменения вкладок применяются перезапуском, он произойдёт сам после сохранения</div></div>`;
-  h+=`<div class="s"><h3>Проверки репозитория</h3><div class="mut">Свои строки во вкладке «Git и PR»: если в корне репо есть <code>file</code>, выполняется <code>cmd</code>; код 0 зелёный, иначе красный.</div>
+    <label class="f">prefix</label><input type="password" id="cx_prefix" value="${e(C.agents.codex.prefix)}">
+    <label class="f">flags</label><input type="text" id="cx_flags" value="${e(C.agents.codex.flags)}"></div>
+   <div class="mut">the command will look like this (password hidden):</div><pre id="pv"></pre></div>`;
+  h+=`<div class="s"><h3>Where to open sessions</h3><div class="row"><span class="chip ${C.open_in==="window"?"on":""}" data-w="window">new window</span><span class="chip ${C.open_in==="tab"?"on":""}" data-w="tab">tab in the current window</span></div></div>`;
+  h+=`<div class="s"><h3>Toolbelt tabs</h3>${Object.keys(TABS).map(k=>`<label class="row"><input type="checkbox" data-t="${k}" ${C.tabs[k]?"checked":""} > ${e(TABS[k])}</label>`).join("")}
+   <label class="row" style="margin-top:6px"><input type="checkbox" id="autoshow" ${C.auto_show_toolbelt!==false?"checked":""}> show the Toolbelt in every new window</label>
+   <label class="row"><input type="checkbox" id="autosave" ${C.autosave!==false?"checked":""}> autosave a snapshot of all windows every 5 minutes</label>
+   <label class="f">title prefix that tells these tabs apart from built-in iTerm tools</label><input type="text" id="prefix" value="${e(C.title_prefix)}" style="width:80px">
+   <div class="mut">tab changes need a restart, it happens automatically after saving</div></div>`;
+  h+=`<div class="s"><h3>Repo checks</h3><div class="mut">Your own lines in the Git &amp; PR tab: if <code>file</code> exists in the repo root, <code>cmd</code> runs; exit 0 is green, anything else red.</div>
    <textarea id="checks" spellcheck="false">${e(JSON.stringify(C.repo_checks||[],null,1))}</textarea>
-   <div class="mut">пример: [{"name":"Контейнеры","file":"docker-compose.yml","cmd":"docker compose ps","max_lines":6}]</div></div>`;
-  h+=`<div class="s mut">версия ${e(d.version)} · конфиг ${e(d.config_file)}</div>`;
+   <div class="mut">example: [{"name":"Containers","file":"docker-compose.yml","cmd":"docker compose ps","max_lines":6}]</div></div>`;
+  h+=`<div class="s mut">version ${e(d.version)} · config ${e(d.config_file)}</div>`;
   document.getElementById("app").outerHTML=`<div id="app">${h}</div>`;
   const $=id=>document.getElementById(id);
-  $("show").onclick=()=>{const t=$("cl_prefix").type==="password"?"text":"password";$("cl_prefix").type=t;$("cx_prefix").type=t;$("show").textContent=t==="text"?"скрыть":"показать"};
+  $("show").onclick=()=>{const t=$("cl_prefix").type==="password"?"text":"password";$("cl_prefix").type=t;$("cx_prefix").type=t;$("show").textContent=t==="text"?"hide":"show"};
   ["cl_prefix","cl_flags","cx_prefix","cx_flags"].forEach(id=>$(id).oninput=()=>{collect();preview()});
   $("cl_skip").onchange=()=>{collect();preview()};
   document.querySelectorAll("[data-w]").forEach(n=>n.onclick=()=>{C.open_in=n.dataset.w;document.querySelectorAll("[data-w]").forEach(m=>m.classList.toggle("on",m===n))});
@@ -74,11 +74,11 @@ async function save(quiet){const $=id=>document.getElementById(id);const msg=$("
   collect();
   document.querySelectorAll("[data-t]").forEach(n=>C.tabs[n.dataset.t]=n.checked);
   C.title_prefix=$("prefix").value;C.auto_show_toolbelt=$("autoshow").checked;C.autosave=$("autosave").checked;
-  let checks;try{checks=JSON.parse($("checks").value||"[]");if(!Array.isArray(checks))throw 0}catch(_){msg.innerHTML='<span class="bad">проверки: нужен JSON-массив</span>';return}
+  let checks;try{checks=JSON.parse($("checks").value||"[]");if(!Array.isArray(checks))throw 0}catch(_){msg.innerHTML='<span class="bad">checks: a JSON array is required</span>';return}
   const body={autosave:C.autosave,auto_show_toolbelt:C.auto_show_toolbelt,open_in:C.open_in,title_prefix:C.title_prefix,onboarded:C.onboarded,agents:C.agents,tabs:C.tabs,repo_checks:checks};
   const r=await (await fetch("/settings/save",{method:"POST",headers:{"X-Toolbelt":"1","Content-Type":"application/json"},body:JSON.stringify(body)})).text();
-  if(r==="restart"){msg.innerHTML='<span class="warn">перезапускаю, вкладки обновятся через пару секунд…</span>';setTimeout(()=>location.reload(),4000)}
-  else if(r==="ok"){msg.innerHTML=quiet?"":'<span class="ok">сохранено</span>';if(!quiet)setTimeout(()=>msg.textContent="",2500)}
+  if(r==="restart"){msg.innerHTML='<span class="warn">restarting, tabs will refresh in a few seconds…</span>';setTimeout(()=>location.reload(),4000)}
+  else if(r==="ok"){msg.innerHTML=quiet?"":'<span class="ok">saved</span>';if(!quiet)setTimeout(()=>msg.textContent="",2500)}
   else msg.innerHTML=`<span class="bad">${e(r)}</span>`}
 document.getElementById("save").onclick=()=>save(false);
 async function load(){try{const d=await (await fetch("/settings/state")).json();V=d.v;render(d)}catch(_){setTimeout(load,1500)}}
