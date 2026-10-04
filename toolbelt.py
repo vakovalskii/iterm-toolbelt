@@ -47,6 +47,8 @@ DEFAULTS = {
     # открывать боковую панель Toolbelt в каждом новом окне iTerm (один раз на окно:
     # если скрыть руками, больше не лезет)
     "auto_show_toolbelt": True,
+    # снимок всех окон раз в 5 минут в ~/.config/itermsnap/snaps (формат TermDeck)
+    "autosave": True,
     "onboarded": False,
 }
 
@@ -771,6 +773,174 @@ async def focus_tty(tty: str) -> str:
     return "это окно не в iTerm"
 
 
+# ─────────────── снимки окон (формат TermDeck) ───────────────
+
+SNAP_DIR = os.path.expanduser(os.getenv("ITERMSNAP_HOME", "~/.config/itermsnap")) + "/snaps"
+SAFE_SNAP = re.compile(r"^[\w .:-]{1,60}$")
+AUTO_PREFIX = "авто-"
+AUTO_KEEP = 20
+_LAST_AUTO = {"sig": None}
+
+
+async def _pane_info(session) -> dict | None:
+    """Папка панели и агент в ней. id сессии claude берём точно по процессу на tty
+    (~/.claude/sessions/<pid>.json), а не по самому свежему файлу в папке."""
+    agent = await session_agent(session)
+    if agent and agent.get("cwd"):
+        return {"cwd": agent["cwd"], "session_id": agent.get("sid"), "agent": "claude"}
+    cwd = await session_cwd(session)
+    if not cwd:
+        return None
+    return {"cwd": cwd, "session_id": None, "agent": ""}
+
+
+async def capture_windows(app) -> list:
+    """Все окна → [{title, split, panes:[{cwd, session_id, agent}]}], формат TermDeck."""
+    tabs = []
+    for w in app.terminal_windows:
+        for t in w.tabs:
+            panes = []
+            for sess in t.sessions:
+                info = await _pane_info(sess)
+                if info:
+                    panes.append(info)
+            if not panes:
+                continue
+            title = ""
+            try:
+                title = (await t.async_get_variable("titleOverride")) or ""
+            except Exception:  # noqa: BLE001
+                pass
+            if not title:
+                title = os.path.basename(panes[0]["cwd"].rstrip("/")) or "~"
+            tabs.append({"title": title[:60], "split": "vertical", "panes": panes})
+    return tabs
+
+
+def snap_list() -> list:
+    out = []
+    for p in sorted(glob.glob(os.path.join(SNAP_DIR, "*.json")), key=os.path.getmtime, reverse=True):
+        try:
+            with open(p) as f:
+                tabs = json.load(f)
+        except (OSError, ValueError):
+            continue
+        name = os.path.basename(p)[:-5]
+        out.append({"name": name, "mtime": int(os.path.getmtime(p) * 1000), "auto": name.startswith((AUTO_PREFIX, "автосохранение")),
+                    "tabs": [{"title": t.get("title") or os.path.basename((t.get("panes") or [{}])[0].get("cwd", "")),
+                              "panes": len(t.get("panes") or []),
+                              "agents": sum(1 for x in t.get("panes") or [] if x.get("session_id"))} for t in tabs]})
+    return out
+
+
+def _write_snap(name: str, tabs: list):
+    os.makedirs(SNAP_DIR, exist_ok=True)
+    path = os.path.join(SNAP_DIR, name + ".json")
+    if os.path.exists(path):
+        os.replace(path, path + ".bak")
+    with open(path + ".tmp", "w") as f:
+        json.dump(tabs, f, ensure_ascii=False, indent=2)
+    os.replace(path + ".tmp", path)
+
+
+async def snap_save(name: str) -> str:
+    if not SAFE_SNAP.match(name or ""):
+        return "имя: буквы, цифры, пробел, . : - до 60 знаков"
+    app = await iterm2.async_get_app(CONN["c"])
+    tabs = await capture_windows(app)
+    if not tabs:
+        return "нечего сохранять: окон с папками нет"
+    _write_snap(name, tabs)
+    return "ok"
+
+
+async def autosave_loop(app):
+    """Раз в 5 минут снимок всех окон, только если что-то поменялось и есть хоть один
+    агент. Хранятся последние AUTO_KEEP: закрытые разом окна не затрут снимок пустым."""
+    while True:
+        await asyncio.sleep(300)
+        if not CFG.get("autosave", True):
+            continue
+        try:
+            await app.async_refresh()
+            tabs = await capture_windows(app)
+        except Exception:  # noqa: BLE001
+            continue
+        if not any(p.get("session_id") for t in tabs for p in t["panes"]):
+            continue
+        sig = json.dumps(tabs, sort_keys=True)
+        if sig == _LAST_AUTO["sig"]:
+            continue
+        _LAST_AUTO["sig"] = sig
+        _write_snap(AUTO_PREFIX + time.strftime("%Y%m%d-%H%M"), tabs)
+        autos = sorted(glob.glob(os.path.join(SNAP_DIR, AUTO_PREFIX + "*.json")), key=os.path.getmtime)
+        for old in autos[:-AUTO_KEEP]:
+            for f in (old, old + ".bak"):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+
+async def _wait_shell(app, session_id: str):
+    shell = os.path.basename(os.environ.get("SHELL", "zsh"))
+    for _ in range(50):
+        await asyncio.sleep(0.2)
+        try:
+            await app.async_refresh()
+            s = app.get_session_by_id(session_id)
+            if s and (await s.async_get_variable("jobName")) in (shell, "-" + shell):
+                return s
+        except Exception:  # noqa: BLE001
+            pass
+    return app.get_session_by_id(session_id)
+
+
+async def snap_restore(name: str, skip: bool) -> str:
+    if not SAFE_SNAP.match(name or ""):
+        return "плохое имя"
+    try:
+        with open(os.path.join(SNAP_DIR, name + ".json")) as f:
+            tabs = json.load(f)
+    except (OSError, ValueError):
+        return "снимка нет"
+    conn = CONN["c"]
+    app = await iterm2.async_get_app(conn)
+    # профиль TermDeck (если есть) не даёт claude перебивать имена вкладок
+    profile = "TermDeck" if os.path.exists(os.path.expanduser(
+        "~/Library/Application Support/iTerm2/DynamicProfiles/termdeck.json")) else None
+    win = None
+    for tab in tabs:
+        if win is None:
+            win = await iterm2.Window.async_create(conn, profile=profile)
+            t = win.current_tab
+        else:
+            t = await win.async_create_tab(profile=profile)
+        first = t.current_session
+        sessions = [first]
+        for _ in tab.get("panes", [])[1:]:
+            sessions.append(await sessions[-1].async_split_pane(vertical=tab.get("split") != "horizontal", profile=profile))
+        for sess, pane in zip(sessions, tab.get("panes", [])):
+            s = await _wait_shell(app, sess.session_id)
+            if not s:
+                continue
+            cwd = pane.get("cwd") or ""
+            cmd = f"cd {shlex.quote(cwd)}" if cwd and os.path.isdir(cwd) else ""
+            sid = pane.get("session_id")
+            if sid and SAFE_ID.match(sid):
+                launch = agent_command(pane.get("agent") or "claude", sid, skip)
+                cmd = (cmd + " && " if cmd else "") + launch
+            if cmd:
+                await s.async_send_text(cmd + "\n")
+        try:
+            await t.async_set_title(tab.get("title") or "")
+        except Exception:  # noqa: BLE001
+            pass
+    if win:
+        await win.async_activate()
+    return "ok"
+
+
 # ─────────────── вкладка «Настройки» ───────────────
 
 def settings_state() -> dict:
@@ -786,7 +956,7 @@ def settings_save(body: bytes) -> str:
         return "не объект"
     cfg = load_config()
     restart = False
-    for k in ("open_in", "title_prefix", "onboarded", "auto_show_toolbelt"):
+    for k in ("open_in", "title_prefix", "onboarded", "auto_show_toolbelt", "autosave"):
         if k in new:
             restart |= k == "title_prefix" and new[k] != cfg.get(k)
             cfg[k] = new[k]
@@ -843,9 +1013,11 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             out, ctype = agent_item(int(i) if i.lstrip("-").isdigit() else -1).encode(), "text/plain; charset=utf-8"
         elif u.path == "/sessions/state":
             out = json.dumps(await sessions_state(), ensure_ascii=False).encode()
+        elif u.path == "/snaps/state":
+            out = json.dumps({"v": BOOT, "snaps": snap_list()}, ensure_ascii=False).encode()
         elif u.path == "/settings/state":
             out = json.dumps(settings_state(), ensure_ascii=False).encode()
-        elif u.path in ("/sessions/open", "/sessions/focus", "/settings/save") and not mutating:
+        elif u.path in ("/sessions/open", "/sessions/focus", "/settings/save", "/snaps/save", "/snaps/restore") and not mutating:
             out, ctype, status = b"forbidden", "text/plain", b"403 Forbidden"
         elif u.path == "/sessions/open":
             try:
@@ -857,6 +1029,14 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         elif u.path == "/sessions/focus":
             tty = qs.get("tty", "")
             res = await focus_tty(tty) if re.fullmatch(r"ttys?\d+", tty) else "плохой tty"
+            out, ctype = res.encode(), "text/plain; charset=utf-8"
+        elif u.path in ("/snaps/save", "/snaps/restore"):
+            try:
+                res = await (snap_save(qs.get("name", "")) if u.path == "/snaps/save"
+                             else snap_restore(qs.get("name", ""), qs.get("skip") == "1"))
+            except Exception as ex:  # noqa: BLE001
+                res = f"ошибка: {type(ex).__name__}: {ex}"
+            print(time.strftime("%H:%M:%S"), u.path, qs.get("name"), "->", res, flush=True)
             out, ctype = res.encode(), "text/plain; charset=utf-8"
         elif u.path == "/settings/save":
             res = settings_save(body)
@@ -925,6 +1105,7 @@ async def main(connection):
             await asyncio.sleep(5)
             await refresh_session(app, STATE["session_id"])
     asyncio.create_task(poll())
+    asyncio.create_task(autosave_loop(app))
 
     async with iterm2.FocusMonitor(connection) as mon:
         while True:
