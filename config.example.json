@@ -9,5 +9,7 @@
   },
   "repo_checks": [],
   "auto_show_toolbelt": true,
-  "onboarded": false
+  "onboarded": false,
+  "proxies": [{"name": "eu-1", "url": "http://user:pass@203.0.113.10:3128"}],
+  "servers": [{"name": "eu-1", "host": "203.0.113.10", "port": 22}]
 }

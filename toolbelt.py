@@ -41,6 +41,9 @@ DEFAULTS = {
         "claude": {"prefix": "", "flags": "", "skip_permissions": False},
         "codex": {"prefix": "", "flags": ""},
     },
+    # Network block in Agent actions (local only, see "Network" below)
+    "proxies": [],
+    "servers": [],
     # Custom checks in the Git & PR tab: if `file` exists in the repo root, `cmd` is run.
     # Exit code 0 is shown green, anything else red.
     "repo_checks": [],
@@ -993,6 +996,96 @@ def settings_save(body: bytes) -> str:
     return "restart" if restart else "ok"
 
 
+# ─────────────── Network: proxies and servers ───────────────
+# Both lists live only in the local config (proxy URLs carry passwords, server IPs are private):
+#   "proxies": [{"name": "eu-1", "url": "http://user:pass@host:port"}]
+#   "servers": [{"name": "eu-1", "host": "203.0.113.5", "port": 22}]
+# Everything is probed from this Mac, so the panel answers "what works from where I sit now".
+
+NET_TARGETS = (("anthropic", "https://api.anthropic.com/v1/models"),
+               ("openai", "https://api.openai.com/v1/models"))
+PROXY_RE = re.compile(r"(?:^|\s)(?:HTTPS_PROXY|https_proxy|ALL_PROXY|all_proxy)=(\S+)")
+
+
+def _hostport(url: str) -> str:
+    u = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
+    return f"{u.hostname}:{u.port}" if u.hostname else ""
+
+
+async def session_proxy(pid) -> dict | None:
+    """Proxy the running claude was started with: HTTPS_PROXY from its environment
+    (`ps eww` shows the environment of our own processes)."""
+    if not pid:
+        return None
+    _, out = await run(["ps", "eww", "-o", "command=", "-p", str(pid)], timeout=3)
+    m = PROXY_RE.search(out)
+    if not m:
+        return {"name": "direct", "url": ""}
+    url = m.group(1).strip("'\"")
+    hp = _hostport(url)
+    name = next((p.get("name") for p in CFG.get("proxies") or [] if _hostport(p.get("url", "")) == hp), None)
+    return {"name": name or hp, "url": mask(url)}
+
+
+async def _curl(proxy: str, url: str) -> dict:
+    # the proxy (with its password) goes through stdin, not argv: argv is visible in ps
+    conf = (f'proxy = "{proxy}"\n' if proxy else 'noproxy = "*"\n') + f'url = "{url}"\n'
+    p = None
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "curl", "-s", "-o", "/dev/null", "-m", "8", "-w", "%{http_code} %{time_total}", "-K", "-",
+            env=NOPROXY_ENV, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(p.communicate(conf.encode()), 12)
+        code, t = (out.decode().split() + ["0", "0"])[:2]
+        return {"code": int(code), "ms": round(float(t) * 1000)}
+    except Exception:  # noqa: BLE001
+        try:
+            p and p.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"code": 0, "ms": None}
+
+
+async def _probe_proxy(name: str, url: str) -> dict:
+    res = await asyncio.gather(*(_curl(url, u) for _, u in NET_TARGETS))
+    return {"name": name, "hp": _hostport(url) if url else "", **{k: r for (k, _), r in zip(NET_TARGETS, res)}}
+
+
+async def _probe_server(s: dict) -> dict:
+    host, port = str(s.get("host", "")), int(s.get("port") or 22)
+    out = {"name": s.get("name") or host, "host": host, "port": port, "ping": None, "tcp": None, "banner": ""}
+    rc, txt = await run(["/sbin/ping", "-c", "2", "-t", "4", host], timeout=6)
+    m = re.search(r"= [\d.]+/([\d.]+)/", txt)
+    out["ping"] = round(float(m.group(1))) if rc == 0 and m else None
+    t0 = time.monotonic()
+    try:
+        r, w = await asyncio.wait_for(asyncio.open_connection(host, port), 6)
+        out["tcp"] = round((time.monotonic() - t0) * 1000)
+        try:
+            out["banner"] = (await asyncio.wait_for(r.readline(), 6)).decode("latin-1").strip()[:40]
+        except Exception:  # noqa: BLE001
+            out["banner"] = ""  # port open but no greeting: DPI or a stuck sshd
+        w.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+async def _net_probe() -> dict:
+    proxies = [("direct", "")] + [(p.get("name") or _hostport(p.get("url", "")), p["url"])
+                                  for p in CFG.get("proxies") or [] if p.get("url")]
+    pr, sv = await asyncio.gather(asyncio.gather(*(_probe_proxy(n, u) for n, u in proxies)),
+                                  asyncio.gather(*(_probe_server(s) for s in CFG.get("servers") or [] if s.get("host"))))
+    return {"at": time.time(), "proxies": list(pr), "servers": list(sv)}
+
+
+async def net_state() -> dict:
+    c = STATE.get("agent") or {}
+    return {"v": BOOT, "session": await session_proxy(c.get("pid")),
+            "probe": cached_bg("net:probe", 60, _net_probe)}
+
+
 # ─────────────── HTTP ───────────────
 
 PAGES = {"/": "git.html", "/agent": "agent.html", "/sessions": "sessions.html", "/settings": "settings.html"}
@@ -1024,6 +1117,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             out, ctype = (await file_diff(qs.get("f", ""))).encode(), "text/plain; charset=utf-8"
         elif u.path == "/agent/state":
             out = json.dumps(agent_state(), ensure_ascii=False).encode()
+        elif u.path == "/net/state":
+            out = json.dumps(await net_state(), ensure_ascii=False).encode()
         elif u.path == "/agent/item":
             i = qs.get("i", "-1")
             out, ctype = agent_item(int(i) if i.lstrip("-").isdigit() else -1).encode(), "text/plain; charset=utf-8"

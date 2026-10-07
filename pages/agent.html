@@ -11,8 +11,10 @@
 .bash{color:#e3b341}.edit{color:#56d364}.read{color:#79c0ff}.search{color:#d2a8ff}.agent{color:#ff7b72}.web{color:#39c5cf}.mcp{color:#a5d6ff}.other{color:var(--mut)}
 pre{margin:4px 10px 8px;font:11px/1.35 "SF Mono",Menlo,monospace;white-space:pre-wrap;word-break:break-all;max-height:50vh;overflow:auto;background:#0e1013;padding:6px;border-radius:4px}
 .add{color:var(--ok)}.del{color:var(--bad)}.hunk{color:var(--acc)}
-#hdr{position:sticky;top:0;background:var(--bg);z-index:2}#end{position:fixed;right:10px;bottom:10px;width:28px;height:28px;border-radius:14px;background:#1f2a3a;color:var(--acc);display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid var(--line)}
-</style></head><body><div id="hdr" class="s mut">loading…</div><div id="list"></div><div id="end" title="jump to latest" onclick="follow=true;sel=null;lastKey=null;tick();toEnd()">⬇</div>
+#top{position:sticky;top:0;background:var(--bg);z-index:2}#net{max-height:45vh;overflow:auto}#end{position:fixed;right:10px;bottom:10px;width:28px;height:28px;border-radius:14px;background:#1f2a3a;color:var(--acc);display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid var(--line)}
+#net summary{cursor:pointer;color:var(--mut);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;list-style:none}#net summary::-webkit-details-marker{display:none}
+#net table{border-collapse:collapse;width:100%;margin-top:4px}#net td{padding:1px 6px 1px 0;white-space:nowrap}#net td.n{max-width:130px;overflow:hidden;text-overflow:ellipsis}#net .warn{color:var(--warn)}#net .cur{color:var(--acc)}
+</style></head><body><div id="top"><details id="net" class="s"><summary>network</summary><div id="netb" class="mut">probing…</div></details><div id="hdr" class="s mut">loading…</div></div><div id="list"></div><div id="end" title="jump to latest" onclick="follow=true;sel=null;lastKey=null;tick();toEnd()">⬇</div>
 <script>
 const K={all:"all",bash:"bash",edit:"edits",read:"reads",search:"search",agent:"agents",web:"web",mcp:"mcp"};
 let flt="all", sel=null, lastKey=null, follow=true, first=true, lastSid=null;
@@ -43,4 +45,25 @@ function render(d){
 let V=null;
 async function tick(){try{const d=await (await fetch("/agent/state")).json();if(V&&d.v!==V){location.reload();return}V=d.v;const key=JSON.stringify([d.claude&&d.claude.sid,d.claude&&d.claude.status,d.total,d.items.length&&d.items[d.items.length-1].res,flt,sel]);if(key!==lastKey){lastKey=key;render(d)}}catch(_){document.getElementById("hdr").innerHTML='<span class="bad">panel is not responding</span>'}}
 tick();setInterval(tick,1000);
+// ── network: the proxy this claude runs through, proxy liveness, foreign servers
+const nd=document.getElementById("net");try{nd.open=localStorage.getItem("net")!=="0"}catch(_){nd.open=true}
+nd.addEventListener("toggle",()=>{try{localStorage.setItem("net",nd.open?"1":"0")}catch(_){}});
+const api=r=>!r||!r.code?`<span class="bad">dead</span>`:r.code===403?`<span class="warn">403 ${r.ms}ms</span>`:r.code<500?`<span class="ok">${r.ms}ms</span>`:`<span class="warn">${r.code}</span>`;
+const alive=p=>p&&p.anthropic&&p.openai&&p.anthropic.code&&p.anthropic.code!==403&&p.anthropic.code<500&&p.openai.code&&p.openai.code<500;
+async function net(){try{const d=await (await fetch("/net/state")).json();const pr=d.probe;
+  const cur=d.session;let h="",sum="network";
+  if(cur){const row=pr&&pr.proxies.find(x=>x.name===cur.name);const ok=row?alive(row):null;
+    sum=`network · claude via <span class="${ok===false?"bad":ok?"ok":"cur"}">${e(cur.name)}</span>`;
+    h+=`<div>this claude → <b class="cur">${e(cur.name)}</b> ${cur.url?`<span class="mut">${e(cur.url)}</span>`:""} ${ok===false?'<span class="bad">✗ proxy is down</span>':ok?'<span class="ok">✓ alive</span>':""}</div>`}
+  if(!pr){h+=`<div class="mut">probing…</div>`}else{
+    h+=`<table><tr class="mut"><td>proxy</td><td>anthropic</td><td>openai</td></tr>`;
+    for(const p of pr.proxies)h+=`<tr><td class="n ${cur&&cur.name===p.name?"cur":""}" title="${e(p.hp)}">${alive(p)?"●":"○"} ${e(p.name)}</td><td>${api(p.anthropic)}</td><td>${api(p.openai)}</td></tr>`;
+    h+=`</table>`;
+    if(pr.servers.length){h+=`<table><tr class="mut"><td>server</td><td>ping</td><td>ssh</td></tr>`;
+      for(const s of pr.servers){const st=s.banner?"ok":s.tcp!==null?"warn":"bad";
+        h+=`<tr><td class="n" title="${e(s.host)}:${s.port}"><span class="${st}">●</span> ${e(s.name)}</td><td>${s.ping!==null?s.ping+"ms":'<span class="mut">—</span>'}</td><td class="${st}">${s.banner?s.tcp+"ms":s.tcp!==null?"open, no banner":"closed"}</td></tr>`}
+      h+=`</table>`}
+    h+=`<div class="mut">checked ${new Date(pr.at*1000).toLocaleTimeString("ru-RU")}, from this Mac</div>`}
+  nd.querySelector("summary").innerHTML=sum;document.getElementById("netb").innerHTML=h}catch(_){}}
+net();setInterval(net,5000);
 </script></body></html>
