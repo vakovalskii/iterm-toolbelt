@@ -44,6 +44,7 @@ DEFAULTS = {
     # Network block in Agent actions (local only, see "Network" below)
     "proxies": [],
     "servers": [],
+    "keenetic": {},
     # Custom checks in the Git & PR tab: if `file` exists in the repo root, `cmd` is run.
     # Exit code 0 is shown green, anything else red.
     "repo_checks": [],
@@ -1054,7 +1055,8 @@ async def _probe_proxy(name: str, url: str) -> dict:
 
 async def _probe_server(s: dict) -> dict:
     host, port = str(s.get("host", "")), int(s.get("port") or 22)
-    out = {"name": s.get("name") or host, "host": host, "port": port, "ping": None, "tcp": None, "banner": ""}
+    out = {"name": s.get("name") or host, "host": host, "port": port, "ping": None, "tcp": None, "banner": "",
+           "nobanner": s.get("banner") is False}
     rc, txt = await run(["/sbin/ping", "-c", "2", "-t", "4", host], timeout=6)
     m = re.search(r"= [\d.]+/([\d.]+)/", txt)
     out["ping"] = round(float(m.group(1))) if rc == 0 and m else None
@@ -1063,7 +1065,8 @@ async def _probe_server(s: dict) -> dict:
         r, w = await asyncio.wait_for(asyncio.open_connection(host, port), 6)
         out["tcp"] = round((time.monotonic() - t0) * 1000)
         try:
-            out["banner"] = (await asyncio.wait_for(r.readline(), 6)).decode("latin-1").strip()[:40]
+            if not out["nobanner"]:
+                out["banner"] = (await asyncio.wait_for(r.readline(), 6)).decode("latin-1").strip()[:40]
         except Exception:  # noqa: BLE001
             out["banner"] = ""  # port open but no greeting: DPI or a stuck sshd
         w.close()
@@ -1080,10 +1083,100 @@ async def _net_probe() -> dict:
     return {"at": time.time(), "proxies": list(pr), "servers": list(sv)}
 
 
+# Keenetic router (optional, local config only): "keenetic": {"host": "192.168.1.1", "login": "admin", "password": "…"}
+# Reads WireGuard tunnels, their ping-check state and `dns-proxy route object-group` chains through the RCI API,
+# so the panel shows which tunnel every domain group is going through right now.
+_KN: dict = {}
+
+
+def _kn_rci(cmds: list[str]) -> list:
+    import hashlib
+    import http.cookiejar
+    import urllib.request
+    k = CFG.get("keenetic") or {}
+    base = "http://" + k.get("host", "192.168.1.1")
+    if "op" not in _KN:
+        _KN["op"] = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                               urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    op = _KN["op"]
+
+    def call():
+        req = urllib.request.Request(base + "/rci/", data=json.dumps([{"parse": c} for c in cmds]).encode(),
+                                     headers={"Content-Type": "application/json"})
+        return json.load(op.open(req, timeout=8))
+    try:
+        return call()
+    except urllib.error.HTTPError as e:
+        if e.code != 401:
+            raise
+    try:
+        op.open(base + "/auth", timeout=5)
+    except urllib.error.HTTPError as e:
+        if e.code != 401:
+            raise
+        realm, ch = e.headers["X-NDM-Realm"], e.headers["X-NDM-Challenge"]
+        md5 = hashlib.md5(f'{k.get("login", "admin")}:{realm}:{k.get("password", "")}'.encode()).hexdigest()
+        body = json.dumps({"login": k.get("login", "admin"),
+                           "password": hashlib.sha256((ch + md5).encode()).hexdigest()}).encode()
+        op.open(urllib.request.Request(base + "/auth", data=body, headers={"Content-Type": "application/json"}), timeout=5)
+    return call()
+
+
+def _kn_state() -> dict:
+    run_cfg = (_kn_rci(["show running-config"])[0].get("parse") or {}).get("message") or []
+    tunnels, routes, cur = {}, [], None
+    for line in run_cfg:
+        m = re.match(r"interface (Wireguard\d+)$", line)
+        if m:
+            cur = m.group(1)
+            tunnels[cur] = {"iface": cur, "desc": ""}
+            continue
+        if cur and line.startswith("    description "):
+            tunnels[cur]["desc"] = line.split("description ", 1)[1]
+        elif not line.startswith(" "):
+            cur = None
+        m = re.match(r"\s+route object-group (\S+) (\S+)", line)
+        if m:
+            routes.append(m.groups())
+    names = list(tunnels)
+    res = _kn_rci(["show ping-check"] + [f"show interface {n}" for n in names])
+    pc = {}
+    for prof in ((res[0].get("parse") or {}).get("pingcheck") or []):
+        for iface, v in (prof.get("interface") or {}).items():
+            pc[iface] = v.get("status")
+    now = time.time()
+    for n, r in zip(names, res[1:]):
+        d = r.get("parse") or {}
+        peer = ((d.get("wireguard") or {}).get("peer") or [{}])[0]
+        hs = peer.get("last-handshake")
+        tunnels[n].update({
+            "up": d.get("state") == "up" and d.get("link") == "up",
+            "check": pc.get(n),
+            "handshake": int(hs) if str(hs or "").isdigit() else None,
+            "rx": peer.get("rxbytes"), "tx": peer.get("txbytes"),
+        })
+    alive = {n for n, t in tunnels.items() if t["up"] and t["check"] != "fail"}
+    groups: dict[str, list] = {}
+    for g, i in routes:
+        groups.setdefault(g, []).append(i)
+    return {"at": now, "tunnels": list(tunnels.values()),
+            "groups": [{"name": g, "chain": ch, "active": next((i for i in ch if i in alive), None)}
+                       for g, ch in groups.items()]}
+
+
+async def _kn_probe() -> dict:
+    try:
+        return await asyncio.to_thread(_kn_state)
+    except Exception as e:  # noqa: BLE001
+        _KN.pop("op", None)
+        return {"at": time.time(), "error": f"{type(e).__name__}: {str(e)[:80]}"}
+
+
 async def net_state() -> dict:
     c = STATE.get("agent") or {}
     return {"v": BOOT, "session": await session_proxy(c.get("pid")),
-            "probe": cached_bg("net:probe", 60, _net_probe)}
+            "probe": cached_bg("net:probe", 60, _net_probe),
+            "keenetic": cached_bg("net:kn", 15, _kn_probe) if (CFG.get("keenetic") or {}).get("password") else None}
 
 
 # ─────────────── HTTP ───────────────

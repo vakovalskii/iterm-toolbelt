@@ -11,5 +11,7 @@
   "auto_show_toolbelt": true,
   "onboarded": false,
   "proxies": [{"name": "eu-1", "url": "http://user:pass@203.0.113.10:3128"}],
-  "servers": [{"name": "eu-1", "host": "203.0.113.10", "port": 22}]
+  "servers": [{"name": "eu-1", "host": "203.0.113.10", "port": 22},
+              {"name": "mtproto eu-1", "host": "203.0.113.10", "port": 8443, "banner": false}],
+  "keenetic": {"host": "192.168.1.1", "login": "admin", "password": ""}
 }

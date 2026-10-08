@@ -59,9 +59,18 @@ async function net(){try{const d=await (await fetch("/net/state")).json();const 
     h+=`<table><tr class="mut"><td>proxy</td><td>anthropic</td><td>openai</td></tr>`;
     for(const p of pr.proxies)h+=`<tr><td class="n ${cur&&cur.name===p.name?"cur":""}" title="${e(p.hp)}">${alive(p)?"●":"○"} ${e(p.name)}</td><td>${api(p.anthropic)}</td><td>${api(p.openai)}</td></tr>`;
     h+=`</table>`;
-    if(pr.servers.length){h+=`<table><tr class="mut"><td>server</td><td>ping</td><td>ssh</td></tr>`;
-      for(const s of pr.servers){const st=s.banner?"ok":s.tcp!==null?"warn":"bad";
-        h+=`<tr><td class="n" title="${e(s.host)}:${s.port}"><span class="${st}">●</span> ${e(s.name)}</td><td>${s.ping!==null?s.ping+"ms":'<span class="mut">—</span>'}</td><td class="${st}">${s.banner?s.tcp+"ms":s.tcp!==null?"open, no banner":"closed"}</td></tr>`}
+    const kn=d.keenetic;
+    if(kn&&kn.error){h+=`<div class="mut">router: ${e(kn.error)}</div>`}
+    else if(kn&&kn.tunnels){const ago=x=>x===null?"—":x<120?x+"s":Math.round(x/60)+"m";const mb=b=>b==null?"":(b/1048576).toFixed(b>1048576*10?0:1)+"M";
+      h+=`<table><tr class="mut"><td>tunnel</td><td>check</td><td>handshake</td><td>rx/tx</td></tr>`;
+      for(const t of kn.tunnels){const st=!t.up||t.check==="fail"?"bad":t.check==="pass"?"ok":"warn";
+        h+=`<tr><td class="n" title="${e(t.iface)}"><span class="${st}">●</span> ${e(t.desc||t.iface)}</td><td class="${st}">${t.up?e(t.check||"on"):"down"}</td><td>${ago(t.handshake)}</td><td class="mut">${mb(t.rx)}/${mb(t.tx)}</td></tr>`}
+      h+=`</table><table>`;const dn=Object.fromEntries(kn.tunnels.map(t=>[t.iface,t.desc||t.iface]));
+      for(const g of kn.groups)h+=`<tr><td class="n">${e(g.name.replace(/^vpn-/,""))}</td><td>${g.active?`<span class="ok">→ ${e(dn[g.active])}</span>`:'<span class="bad">no live tunnel</span>'} <span class="mut">${e(g.chain.map(i=>(dn[i]||i).replace(/^(NL|US)-/,"")).join(" › "))}</span></td></tr>`;
+      h+=`</table>`}
+    if(pr.servers.length){h+=`<table><tr class="mut"><td>server</td><td>ping</td><td>port</td></tr>`;
+      for(const s of pr.servers){const st=(s.banner||(s.nobanner&&s.tcp!==null))?"ok":s.tcp!==null?"warn":"bad";
+        h+=`<tr><td class="n" title="${e(s.host)}:${s.port}"><span class="${st}">●</span> ${e(s.name)}</td><td>${s.ping!==null?s.ping+"ms":'<span class="mut">—</span>'}</td><td class="${st}">${(s.banner||s.nobanner)&&s.tcp!==null?s.tcp+"ms":s.tcp!==null?"open, no banner":"closed"}</td></tr>`}
       h+=`</table>`}
     h+=`<div class="mut">checked ${new Date(pr.at*1000).toLocaleTimeString("ru-RU")}, from this Mac</div>`}
   nd.querySelector("summary").innerHTML=sum;document.getElementById("netb").innerHTML=h}catch(_){}}
