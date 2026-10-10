@@ -525,6 +525,7 @@ def agent_item(i: int) -> str:
 
 SCAN: dict[str, tuple[float, dict | None]] = {}
 SCAN_FILE = os.path.join(CONFIG_DIR, "scan-cache.json")
+SCAN_VERSION = 1  # Bump when scanner changes require reparsing unchanged files.
 # device, inode, read offset, mtime_ns, last complete name, unfinished line
 PI_NAMES: dict[str, tuple[int, int, int, int, str | None, bytes]] = {}
 SAFE_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,126}[A-Za-z0-9])?$")
@@ -693,21 +694,31 @@ def _scan_claude(path: str) -> dict | None:
 
 def _scan_codex(path: str) -> dict | None:
     sid, cwd, first = "", "", ""
-    for d in _read_head(path, 200, need=(b'"session_meta"', b'"user_message"', b'"role":"user"')):
+    meta_seen = False
+    for d in _read_head(path, 200, need=(b'"session_meta"', b'"user_message"', b'"role"')):
         p = d.get("payload") if isinstance(d.get("payload"), dict) else {}
         if d.get("type") == "session_meta":
-            sid, cwd = p.get("id", ""), p.get("cwd", "")
-        elif not first and d.get("type") == "event_msg" and p.get("type") == "user_message":
-            first = p.get("message", "")
-        elif not first and d.get("type") == "response_item" and p.get("role") == "user":
-            t = _first_text(p.get("content"))
+            if not meta_seen:
+                # Later metadata can belong to a parent copied into this history.
+                meta_seen = True
+                sid, cwd = p.get("id", ""), p.get("cwd", "")
+                source = p.get("source")
+                if isinstance(source, dict) and "subagent" in source:
+                    return None
+        elif not first:
+            if d.get("type") == "event_msg" and p.get("type") == "user_message":
+                t = p.get("message", "")
+            elif d.get("type") == "response_item" and p.get("role") == "user":
+                t = _first_text(p.get("content"))
+            else:
+                continue
             if t and not t.lstrip().startswith(("<environment_context", "<user_instructions", "# AGENTS.md")):
-                first = t
+                first = _clean_title(t)
         if sid and cwd and first:
             break
     if not sid:
         return None
-    return {"id": sid, "tool": "codex", "dir": cwd, "title": _clean_title(first)}
+    return {"id": sid, "tool": "codex", "dir": cwd, "title": first}
 
 
 def _scan_pi_like(path: str, tool: str) -> dict | None:
@@ -738,7 +749,9 @@ def _scan_all() -> list:
     if not SCAN and os.path.isfile(SCAN_FILE):
         try:
             with open(SCAN_FILE) as f:
-                SCAN.update({k: tuple(v) for k, v in json.load(f).items()})
+                cache = json.load(f)
+            if isinstance(cache, dict) and cache.get("version") == SCAN_VERSION:
+                SCAN.update({k: tuple(v) for k, v in cache["sessions"].items()})
         except (OSError, ValueError):
             pass
     files = [(p, _scan_claude) for p in glob.glob(os.path.join(CLAUDE_DIR, "projects", "*", "*.jsonl"))]
@@ -772,7 +785,7 @@ def _scan_all() -> list:
         try:
             os.makedirs(CONFIG_DIR, exist_ok=True)
             with open(SCAN_FILE + ".tmp", "w") as f:
-                json.dump(SCAN, f)
+                json.dump({"version": SCAN_VERSION, "sessions": SCAN}, f)
             os.replace(SCAN_FILE + ".tmp", SCAN_FILE)
         except OSError:
             pass

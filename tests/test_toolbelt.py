@@ -178,6 +178,54 @@ def test_scan_codex(t, tmp_path):
     assert t._scan_codex(str(p)) == {"id": "cx-1", "tool": "codex", "dir": "/w/r", "title": "Add tests"}
 
 
+def _codex_session(t, name, rows):
+    d = os.path.join(t.CODEX_DIR, "sessions", "2026", "10", "10")
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, f"{name}.jsonl")
+    _jl(p, rows, "w")
+    return p
+
+
+@pytest.mark.parametrize("directory", [{"cwd": "/w/fork"}, {}])
+def test_scan_codex_keeps_first_metadata_for_user_forks(t, directory):
+    p = _codex_session(t, "fork", [
+        {"type": "session_meta", "payload": {"id": "fork-1234", **directory,
+            "source": "vscode", "forked_from_id": "parent-1234"}},
+        {"type": "session_meta", "payload": {"id": "parent-1234", "cwd": "/w/parent", "source": "vscode"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Fix example"}}])
+    assert t._scan_codex(p) == {"id": "fork-1234", "tool": "codex",
+                               "dir": directory.get("cwd", ""), "title": "Fix example"}
+
+
+def test_scan_codex_hides_subagents_with_inherited_metadata(t):
+    p = _codex_session(t, "child", [
+        {"type": "session_meta", "payload": {"id": "child-5678", "cwd": "/w/child",
+            "source": {"subagent": {"thread_spawn": {"parent_thread_id": "parent-1234", "depth": 1}}},
+            "forked_from_id": "parent-1234"}},
+        {"type": "session_meta", "payload": {"id": "parent-1234", "cwd": "/w/parent", "source": "vscode"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Fix example"}}])
+    assert t._scan_codex(p) is None
+
+
+@pytest.mark.parametrize("kind", ["event_msg", "response_item"])
+@pytest.mark.parametrize("context", [
+    "  <environment_context>cwd: /w/repo",
+    "  <user_instructions>Use simple code",
+    "  # AGENTS.md instructions\nUse simple code",
+    '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>',
+    "<context>Only context</context>",
+    " \n ",
+])
+def test_scan_codex_skips_context_and_empty_titles(t, kind, context):
+    rows = [{"type": "session_meta", "payload": {"id": "cx-1", "cwd": "/w/r"}}]
+    for message in (context, " Fix   example\n", "Later request"):
+        payload = ({"type": "user_message", "message": message} if kind == "event_msg" else
+                   {"role": "user", "content": [{"type": "input_text", "text": message}]})
+        rows.append({"type": kind, "payload": payload})
+    p = _codex_session(t, "context", rows)
+    assert t._scan_codex(p)["title"] == "Fix example"
+
+
 def _pi_like_session(t, tool, sid, rows):
     root = t.PI_DIR if tool == "pi" else t.OMP_DIR
     d = os.path.join(root, "agent", "sessions", "project")
@@ -343,7 +391,38 @@ def test_scan_all_caches_on_disk_and_drops_deleted_files(t):
     assert os.path.isfile(t.SCAN_FILE)
     os.remove(b)
     assert [r["id"] for r in t._scan_all()] == ["s-a"]
-    assert b not in json.load(open(t.SCAN_FILE))
+    cache = json.load(open(t.SCAN_FILE))
+    assert cache["version"] == t.SCAN_VERSION
+    assert a in cache["sessions"] and b not in cache["sessions"]
+
+
+@pytest.mark.parametrize("legacy_cache", [False, True])
+def test_scan_all_ignores_codex_subagents_and_rebuilds_legacy_cache(t, monkeypatch, legacy_cache):
+    parent_meta = {"type": "session_meta", "payload": {
+        "id": "parent-1234", "cwd": "/w/parent", "source": "vscode"}}
+    prompt = {"type": "event_msg", "payload": {"type": "user_message", "message": "Fix example"}}
+    parent = _codex_session(t, "parent", [parent_meta, prompt,
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Follow-up"}}])
+    child = _codex_session(t, "child", [
+        {"type": "session_meta", "payload": {"id": "child-5678", "cwd": "/w/child",
+            "source": {"subagent": {"thread_spawn": {"parent_thread_id": "parent-1234", "depth": 1}}},
+            "forked_from_id": "parent-1234"}}, parent_meta, prompt])
+    os.utime(parent, (1, 1_000_000))
+    os.utime(child, (1, 2_000_000))
+    if legacy_cache:
+        stale = {"id": "parent-1234", "tool": "codex", "dir": "/w/parent", "title": ""}
+        with open(t.SCAN_FILE, "w") as f:
+            json.dump({parent: [os.path.getmtime(parent), stale],
+                       child: [os.path.getmtime(child), stale]}, f)
+
+    expected = [{"id": "parent-1234", "tool": "codex", "dir": "/w/parent",
+                 "title": "Fix example", "last": 1_000_000_000}]
+    assert t._scan_all() == expected
+    assert t.SCAN[child] == (2_000_000, None)
+    t.SCAN.clear()
+    monkeypatch.setattr(t, "_scan_codex", lambda *_: pytest.fail("unchanged session was parsed again"))
+    assert t._scan_all() == expected
+    assert t.SCAN[child] == (2_000_000, None)
 
 
 def test_scan_all_finds_and_caches_pi_and_omp(t, monkeypatch):
@@ -359,8 +438,10 @@ def test_scan_all_finds_and_caches_pi_and_omp(t, monkeypatch):
     assert [(r["tool"], r["id"], r["dir"]) for r in rows] == [
         ("omp", "omp-1234", "/w/omp"), ("pi", "pi-1234", "/w/pi")]
     assert pi in t.SCAN and omp in t.SCAN
-    assert pi in json.load(open(t.SCAN_FILE)) and omp in json.load(open(t.SCAN_FILE))
+    cache = json.load(open(t.SCAN_FILE))
+    assert pi in cache["sessions"] and omp in cache["sessions"]
 
+    t.SCAN.clear()
     monkeypatch.setattr(t, "_scan_pi_like", lambda *_: pytest.fail("unchanged session was parsed again"))
     assert [r["id"] for r in t._scan_all()] == ["omp-1234", "pi-1234"]
 
