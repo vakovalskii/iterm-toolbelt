@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""agentbelt: an iTerm2 sidebar for AI coding agents (Claude Code, Codex).
+"""agentbelt: an iTerm2 sidebar for AI coding agents (Claude Code, Codex, pi, omp).
 
 Tabs (View → Toolbelt):
   ◆ Git & PR         branch, ahead/behind, changed files with diffs, PR and CI, worktrees
   ◆ Agent actions    what Claude Code is doing in the active pane: commands, edits, reads
-  ◆ Sessions         Claude Code and Codex sessions: projects, resume, running agents
+  ◆ Sessions         Claude Code, Codex, pi and omp sessions: projects, resume, running agents
   Settings (⚙ in the Sessions tab): agent proxy and flags, tabs, repo checks
 
 Pages are served by an HTTP server on 127.0.0.1 (port from the config) and shown by iTerm2
@@ -29,6 +29,8 @@ CONFIG_DIR = os.path.expanduser(os.getenv("AGENTBELT_HOME") or os.getenv("ITERM_
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 CODEX_DIR = os.path.expanduser("~/.codex")
+PI_DIR = os.path.expanduser("~/.pi")
+OMP_DIR = os.path.expanduser("~/.omp")
 VERSION = "0.1.0"
 BOOT = str(int(time.time()))
 
@@ -40,6 +42,8 @@ DEFAULTS = {
     "agents": {
         "claude": {"prefix": "", "flags": "", "skip_permissions": False},
         "codex": {"prefix": "", "flags": ""},
+        "pi": {"prefix": "", "flags": ""},
+        "omp": {"prefix": "", "flags": ""},
     },
     # Network block in Agent actions (local only, see "Network" below)
     "proxies": [],
@@ -517,7 +521,7 @@ def agent_item(i: int) -> str:
 
 SCAN: dict[str, tuple[float, dict | None]] = {}
 SCAN_FILE = os.path.join(CONFIG_DIR, "scan-cache.json")
-SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{4,128}$")
+SAFE_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,126}[A-Za-z0-9])?$")
 
 
 def _first_text(content) -> str:
@@ -567,12 +571,13 @@ def _tail_title(path: str) -> str:
     except OSError:
         return ""
     for line in reversed(tail.splitlines()):
-        if '"ai-title"' in line or '"type":"summary"' in line or '"custom-title"' in line:
+        if ('"ai-title"' in line or '"type":"summary"' in line or '"custom-title"' in line
+                or '"session_info"' in line):
             try:
                 d = json.loads(line)
             except ValueError:
                 continue
-            t = d.get("title") or d.get("aiTitle") or d.get("summary") or d.get("customTitle")
+            t = d.get("title") or d.get("aiTitle") or d.get("summary") or d.get("customTitle") or d.get("name")
             if isinstance(t, str) and t.strip():
                 return t.strip()
     return ""
@@ -613,6 +618,29 @@ def _scan_codex(path: str) -> dict | None:
     return {"id": sid, "tool": "codex", "dir": cwd, "title": _clean_title(first)}
 
 
+def _scan_pi_like(path: str, tool: str) -> dict | None:
+    """Pi and omp share a session header and message format; omp may put a title before it."""
+    sid, cwd, title, first, name = "", "", "", "", ""
+    for d in _read_head(path, need=(b'"cwd"', b'"title"', b'"role"', b'"session_info"')):
+        if d.get("type") == "title" and tool == "omp":
+            title = d.get("title") or title
+        elif d.get("type") == "session":
+            sid, cwd = d.get("id", ""), d.get("cwd", "")
+            title = title or d.get("title") or ""
+        elif d.get("type") == "session_info" and tool == "pi":
+            name = d.get("name") or name
+        elif d.get("type") == "message" and not first:
+            msg = d.get("message") or {}
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                first = _first_text(msg.get("content"))
+        if tool == "omp" and sid and cwd and (title or first):
+            break
+    if not isinstance(sid, str) or not sid or not isinstance(cwd, str) or not cwd:
+        return None
+    return {"id": sid, "tool": tool, "dir": cwd,
+            "title": _clean_title((_tail_title(path) if tool == "pi" else "") or name or title or first)}
+
+
 def _scan_all() -> list:
     """stat every session file, parse only new/changed ones. The cache lives on disk:
     after a restart only changed files are read again."""
@@ -624,6 +652,9 @@ def _scan_all() -> list:
             pass
     files = [(p, _scan_claude) for p in glob.glob(os.path.join(CLAUDE_DIR, "projects", "*", "*.jsonl"))]
     files += [(p, _scan_codex) for p in glob.glob(os.path.join(CODEX_DIR, "sessions", "*", "*", "*", "*.jsonl"))]
+    for tool, root in (("pi", PI_DIR), ("omp", OMP_DIR)):
+        files += [(p, lambda path, tool=tool: _scan_pi_like(path, tool))
+                  for p in glob.glob(os.path.join(root, "agent", "sessions", "*", "*.jsonl"))]
     rows, seen, changed = [], set(), False
     for path, fn in files:
         seen.add(path)
@@ -753,6 +784,9 @@ def agent_command(tool: str, sid: str, skip: bool, proxy: str = "") -> str | Non
     elif tool == "codex":
         flags = a.get("flags") or ""
         core = f"codex resume {q}" if sid else "codex"
+    elif tool in ("pi", "omp"):
+        flags = a.get("flags") or ""
+        core = f"{tool} {'--session' if tool == 'pi' else '-r'} {q}" if sid else tool
     elif sid:
         return {"qwen": f"qwen -r {q}", "kilo": f"kilo resume {q}", "opencode": f"opencode -s {q}",
                 "cursor": f"cursor-agent --resume {q}"}.get(tool)

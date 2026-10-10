@@ -173,6 +173,67 @@ def test_scan_codex(t, tmp_path):
     assert t._scan_codex(str(p)) == {"id": "cx-1", "tool": "codex", "dir": "/w/r", "title": "Add tests"}
 
 
+def _pi_like_session(t, tool, sid, rows):
+    root = t.PI_DIR if tool == "pi" else t.OMP_DIR
+    d = os.path.join(root, "agent", "sessions", "project")
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, f"2026-10-10T00-00-00_{sid}.jsonl")
+    _jl(p, rows, "w")
+    return p
+
+
+@pytest.mark.parametrize("tool", ["pi", "omp"])
+def test_scan_pi_like_reads_session_and_first_user_message(t, tool):
+    rows = [{"type": "session", "version": 3, "id": "session-1234", "cwd": "/w/repo"},
+            {"type": "model_change", "id": "event-1"},
+            {"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "ignore"}]}},
+            {"type": "message", "message": {"role": "user", "content": [
+                {"type": "image", "data": "..."}, {"type": "text", "text": "Fix the login page"}]}}]
+    p = _pi_like_session(t, tool, "session-1234", rows)
+    assert t._scan_pi_like(p, tool) == {"id": "session-1234", "tool": tool,
+                                         "dir": "/w/repo", "title": "Fix the login page"}
+
+
+def test_scan_omp_accepts_title_before_session_header(t):
+    p = _pi_like_session(t, "omp", "session-2345", [
+        {"type": "title", "title": "Login page fix"},
+        {"type": "session", "version": 3, "id": "session-2345", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": [
+            {"type": "text", "text": "Fix the login page"}]}}])
+    assert t._scan_pi_like(p, "omp") == {"id": "session-2345", "tool": "omp",
+                                        "dir": "/w/repo", "title": "Login page fix"}
+
+
+def test_scan_pi_prefers_session_name(t):
+    p = _pi_like_session(t, "pi", "named-1234", [
+        {"type": "session", "id": "named-1234", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": "Original prompt"}},
+        {"type": "session_info", "name": "Chosen name"}])
+    assert t._scan_pi_like(p, "pi")["title"] == "Chosen name"
+
+
+def test_scan_pi_keeps_early_name_after_long_session(t):
+    p = _pi_like_session(t, "pi", "named-5678", [
+        {"type": "session", "id": "named-5678", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": "Original prompt"}},
+        {"type": "session_info", "name": "Chosen name"},
+        {"type": "usage", "details": "x" * 70_000}])
+    assert t._scan_pi_like(p, "pi")["title"] == "Chosen name"
+
+
+def test_scan_omp_uses_legacy_header_title(t):
+    p = _pi_like_session(t, "omp", "legacy-1234", [
+        {"type": "session", "id": "legacy-1234", "cwd": "/w/repo", "title": "Older title"}])
+    assert t._scan_pi_like(p, "omp")["title"] == "Older title"
+
+
+def test_scan_pi_like_ignores_files_without_session_header(t):
+    p = _pi_like_session(t, "omp", "missing", [
+        {"type": "title", "title": "Orphaned title"},
+        {"type": "message", "message": {"role": "user", "content": "hello"}}])
+    assert t._scan_pi_like(p, "omp") is None
+
+
 def test_scan_all_caches_on_disk_and_drops_deleted_files(t):
     a = _claude_session(t, "s-a", "/w/a", [{"type": "user", "cwd": "/w/a", "message": {"content": "first"}}])
     b = _claude_session(t, "s-b", "/w/b", [{"type": "user", "cwd": "/w/b", "message": {"content": "second"}}])
@@ -184,6 +245,25 @@ def test_scan_all_caches_on_disk_and_drops_deleted_files(t):
     os.remove(b)
     assert [r["id"] for r in t._scan_all()] == ["s-a"]
     assert b not in json.load(open(t.SCAN_FILE))
+
+
+def test_scan_all_finds_and_caches_pi_and_omp(t, monkeypatch):
+    pi = _pi_like_session(t, "pi", "pi-1234", [
+        {"type": "session", "id": "pi-1234", "cwd": "/w/pi"},
+        {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "Pi task"}]}}])
+    omp = _pi_like_session(t, "omp", "omp-1234", [
+        {"type": "title", "title": "Omp task"},
+        {"type": "session", "id": "omp-1234", "cwd": "/w/omp"}])
+    os.utime(pi, (1, 1_000_000))
+    os.utime(omp, (1, 2_000_000))
+    rows = t._scan_all()
+    assert [(r["tool"], r["id"], r["dir"]) for r in rows] == [
+        ("omp", "omp-1234", "/w/omp"), ("pi", "pi-1234", "/w/pi")]
+    assert pi in t.SCAN and omp in t.SCAN
+    assert pi in json.load(open(t.SCAN_FILE)) and omp in json.load(open(t.SCAN_FILE))
+
+    monkeypatch.setattr(t, "_scan_pi_like", lambda *_: pytest.fail("unchanged session was parsed again"))
+    assert [r["id"] for r in t._scan_all()] == ["omp-1234", "pi-1234"]
 
 
 # ─────────────── running agents ───────────────
@@ -255,8 +335,18 @@ def test_agent_command_other_tools(t):
     assert t.agent_command("claude", "id with space", False) == "claude --resume 'id with space'"
 
 
+@pytest.mark.parametrize("tool, resume", [("pi", "pi --session"), ("omp", "omp -r")])
+def test_agent_command_pi_and_omp(t, tool, resume):
+    assert t.agent_command(tool, "", False) == tool
+    assert t.agent_command(tool, "session-1234", False) == f"{resume} session-1234"
+    assert t.agent_command(tool, "id with space", False) == f"{resume} 'id with space'"
+    t.CFG["agents"][tool].update(prefix="FOO=1", flags="--model fast")
+    assert t.agent_command(tool, "session-1234", False) == f"FOO=1 {resume} session-1234 --model fast"
+
+
 def test_open_agent_rejects_bad_input_before_touching_iterm(t, tmp_path):
     assert asyncio.run(t.open_agent({"id": "../../etc", "tool": "claude"})) == "bad id"
+    assert asyncio.run(t.open_agent({"id": "x", "tool": "pi"})) == "no connection to iTerm"
     assert asyncio.run(t.open_agent({"tool": "claude", "proxy": "missing"})) == "cannot launch claude via missing"
     assert asyncio.run(t.open_agent({"tool": "claude", "dir": str(tmp_path / "nope")})).startswith("no such directory")
     t.CONN.clear()
@@ -291,6 +381,15 @@ def test_settings_round_trip_keeps_stored_passwords(t):
     assert saved["proxies"] == PROXIES
     assert saved["keenetic"]["password"] == "routerpw"
     assert os.stat(t.CONFIG_FILE).st_mode & 0o777 == 0o600
+
+
+def test_settings_save_keeps_pi_and_omp_launch_options(t):
+    agents = {"pi": {"prefix": "PI_DEBUG=1", "flags": "--model fast", "proxy": "direct"},
+              "omp": {"prefix": "OMP_DEBUG=1", "flags": "--model quick", "proxy": ""}}
+    assert _save(t, {"agents": agents}) == "ok"
+    saved = t.load_config()["agents"]
+    for tool in ("pi", "omp"):
+        assert saved[tool] == agents[tool]
 
 
 def test_settings_rename_proxy_keeps_its_password(t):

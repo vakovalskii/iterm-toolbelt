@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Sessions</title>
 <style>
-:root{--bg:#14161a;--card:#1a1e24;--fg:#d8dce3;--mut:#7d8590;--line:#2a2f37;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff;--cl:#d97757;--cx:#3fb950}
+:root{--bg:#14161a;--card:#1a1e24;--fg:#d8dce3;--mut:#7d8590;--line:#2a2f37;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff;--cl:#d97757;--cx:#3fb950;--pi:#bda5ff;--omp:#72c6d8}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:12px/1.45 -apple-system,BlinkMacSystemFont,"SF Mono",Menlo,monospace;overflow-x:hidden}
 #top{position:sticky;top:0;z-index:3;background:var(--bg);border-bottom:1px solid var(--line);padding:6px 10px}
 .nav{display:flex;gap:6px;align-items:center}.nav b{font-size:13px}.back{cursor:pointer;color:var(--acc);font-size:15px;padding:0 4px}.sp{flex:1}
@@ -11,7 +11,7 @@ input[type=search]{width:100%;margin-top:6px;background:#0e1013;color:var(--fg);
 .scr{padding:10px}.scr.fwd-anim{animation:fwd .2s ease-out}.scr.back-anim{animation:bwd .2s ease-out}
 @keyframes fwd{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}@keyframes bwd{from{opacity:0;transform:translateX(-18px)}to{opacity:1;transform:none}}
 .big{display:grid;gap:10px}.agent{cursor:pointer;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;transition:transform .12s,border-color .12s}.agent:hover{transform:translateY(-2px);border-color:var(--acc)}
-.agent h2{margin:0 0 4px;font-size:16px}.agent.claude h2{color:var(--cl)}.agent.codex h2{color:var(--cx)}.agent.act h2{color:var(--ok)}
+.agent h2{margin:0 0 4px;font-size:16px}.agent.claude h2{color:var(--cl)}.agent.codex h2{color:var(--cx)}.agent.pi h2{color:var(--pi)}.agent.omp h2{color:var(--omp)}.agent.act h2{color:var(--ok)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .tile{cursor:pointer;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:2px;transition:transform .12s,border-color .12s;min-width:0}.tile:hover{transform:translateY(-2px);border-color:var(--acc)}
 .tile.here{border-color:var(--warn)}.tile .n{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tile .p{color:var(--mut);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -22,13 +22,13 @@ input[type=search]{width:100%;margin-top:6px;background:#0e1013;color:var(--fg);
 .here-b i{width:6px;height:6px;border-radius:3px;background:#0d1117;animation:pulse 1.4s ease-in-out infinite}@keyframes pulse{50%{opacity:.25}}
 .rt{display:flex;gap:6px;align-items:baseline;white-space:nowrap}.ttl{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:2px 0}
 button{background:#1f2a3a;color:var(--acc);border:1px solid var(--line);border-radius:5px;padding:2px 9px;cursor:pointer;font:inherit;flex:none}button:hover{border-color:var(--acc)}button.new{color:var(--ok)}
-.claude-t{color:var(--cl)}.codex-t{color:var(--cx)}
+.claude-t{color:var(--cl)}.codex-t{color:var(--cx)}.pi-t{color:var(--pi)}.omp-t{color:var(--omp)}
 .win{margin-top:6px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:#0e1013}
 .win .bar{display:flex;gap:2px;padding:4px 4px 0;background:#181c22;overflow-x:auto}.win .bar span{padding:2px 7px;border-radius:5px 5px 0 0;background:#232831;color:var(--mut);white-space:nowrap;font-size:10px;cursor:pointer}.win .bar span.on{background:#0e1013;color:var(--fg)}
 .win .body{display:flex;gap:3px;padding:4px;min-height:44px}.win .body.h{flex-direction:column}
 .pane{flex:1;min-width:0;border:1px solid #2a2f37;border-radius:4px;padding:4px 5px;display:flex;flex-direction:column;gap:1px}
 .pane .d{font-weight:600;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pane .a{font-size:10px}.pane .t{font-size:10px;color:var(--mut);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.pane.claude{border-color:#5a3a2c}.pane.codex{border-color:#24502d}
+.pane.claude{border-color:#5a3a2c}.pane.codex{border-color:#24502d}.pane.pi{border-color:#51436d}.pane.omp{border-color:#2d5660}
 #toast{position:fixed;left:10px;right:10px;bottom:10px;background:#1f2a3a;border:1px solid var(--acc);border-radius:6px;padding:6px 8px;opacity:0;transition:opacity .2s;pointer-events:none}#toast.on{opacity:1}
 </style></head><body>
 <div id="top"></div><div id="main"></div><div id="toast"></div>
@@ -39,6 +39,7 @@ const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;
 const ago=ms=>{if(!ms)return "";const s=(Date.now()-ms)/1000;if(s<90)return "now";if(s<3600)return Math.round(s/60)+"m";if(s<86400)return Math.round(s/3600)+"h";return Math.round(s/86400)+"d"};
 const base=p=>(p||"").split("/").filter(Boolean).pop()||p||"?";
 const short=p=>(p||"").replace(/^\/Users\/[^/]+/,"~");
+const AGENTS={claude:"Claude Code",codex:"Codex",pi:"pi",omp:"omp"};
 const cur=()=>nav[nav.length-1];
 function go(st){dir="fwd";nav.push(st);save();lastKey=null;draw()}
 function back(){if(nav.length>1){dir="bwd";nav.pop();save();lastKey=null;draw()}}
@@ -53,9 +54,9 @@ async function focusTty(tty){const t=await post("/sessions/focus",{tty});toast(t
 function projects(tool){const m={};for(const r of D.rows){if(r.tool!==tool||!r.dir)continue;const p=m[r.dir]||(m[r.dir]={dir:r.dir,n:0,last:0,live:0});p.n++;p.last=Math.max(p.last,r.last);if(r.live)p.live++}
   return Object.values(m).sort((a,b)=>(b.dir===D.cwd)-(a.dir===D.cwd)||b.last-a.last)}
 function topbar(){const c=cur();const act=D.active.length;
-  let h=`<div class="nav">${nav.length>1?'<span class="back" title="back">←</span>':""}<b>${e(c.s==="start"?"Sessions":c.s==="active"?"Running":c.s==="snaps"?"Window snapshots":c.s==="projects"?(c.tool==="claude"?"Claude Code":"Codex"):base(c.dir))}</b><span class="sp"></span>
+  let h=`<div class="nav">${nav.length>1?'<span class="back" title="back">←</span>':""}<b>${e(c.s==="start"?"Sessions":c.s==="active"?"Running":c.s==="snaps"?"Window snapshots":c.s==="projects"?AGENTS[c.tool]:base(c.dir))}</b><span class="sp"></span>
   <div class="tabs"><span class="tab ${c.s!=="active"&&c.s!=="snaps"?"on":""}" data-h="start">agents</span><span class="tab ${c.s==="active"?"on":""}" data-h="active">running ${act}</span><span class="tab ${c.s==="snaps"?"on":""}" data-h="snaps">snapshots</span></div></div>
-  <div class="opts">open in: <span class="opt ${where==="window"?"on":""}" data-w="window">window</span><span class="opt ${where==="tab"?"on":""}" data-w="tab">tab</span><span class="sp"></span><label><input type="checkbox" id="skip" ${skip?"checked":""}> skip-permissions</label><a href="/settings#agents" title="agent proxy and flags" style="color:var(--acc);text-decoration:none">⚙ proxy</a></div>`;
+  <div class="opts">open in: <span class="opt ${where==="window"?"on":""}" data-w="window">window</span><span class="opt ${where==="tab"?"on":""}" data-w="tab">tab</span><span class="sp"></span><label><input type="checkbox" id="skip" ${skip?"checked":""}> Claude skip-permissions</label><a href="/settings#agents" title="agent proxy and flags" style="color:var(--acc);text-decoration:none">⚙ proxy</a></div>`;
   if(c.s==="projects"||c.s==="project")h+=`<input id="q" type="search" placeholder="${c.s==="projects"?"project or session text…":"search this project's sessions…"}" value="${e(q)}">`;
   const T=document.getElementById("top");if(T.dataset.h===h)return;T.dataset.h=h;T.innerHTML=h;
   T.querySelector(".back")?.addEventListener("click",back);
@@ -67,9 +68,7 @@ function topbar(){const c=cur();const act=D.active.length;
 function body(){const c=cur();let h="";
   if(c.s==="start"){
     const st=t=>{const r=D.rows.filter(x=>x.tool===t);return{n:r.length,p:new Set(r.map(x=>x.dir)).size,last:r[0]?.last||0,live:r.filter(x=>x.live).length}};
-    const A=st("claude"),B=st("codex");
-    h=`<div class="big"><div class="agent claude" data-a="claude"><h2>Claude Code</h2><div>${A.n} sessions · ${A.p} projects</div><div class="mut">last ${ago(A.last)} ${A.live?`· <span class="live">● ${A.live} running</span>`:""}</div></div>
-    <div class="agent codex" data-a="codex"><h2>Codex</h2><div>${B.n} sessions · ${B.p} projects</div><div class="mut">last ${ago(B.last)}</div></div>
+    h=`<div class="big">${Object.entries(AGENTS).map(([tool,name])=>{const x=st(tool);return `<div class="agent ${tool}" data-a="${tool}"><h2>${name}</h2><div>${x.n} sessions · ${x.p} projects</div><div class="mut">${x.last?`last ${ago(x.last)}`:"no sessions yet"} ${x.live?`· <span class="live">● ${x.live} running</span>`:""}</div></div>`}).join("")}
     <div class="agent act" data-act="1"><h2>Running now</h2><div>${D.active.length} running</div><div class="mut">jump to the window where the agent runs</div></div></div>
     <div class="mut" style="margin-top:10px">pane: ${e(D.session||"?")} · ${e(short(D.cwd))}</div>`;
   }else if(c.s==="projects"){
@@ -79,7 +78,7 @@ function body(){const c=cur();let h="";
   }else if(c.s==="project"){
     const ql=q.toLowerCase().trim();let rs=D.rows.filter(r=>r.tool===c.tool&&r.dir===c.dir);
     if(ql)rs=rs.filter(r=>(r.title+" "+r.id).toLowerCase().includes(ql));
-    h=`<div style="margin-bottom:8px;display:flex;gap:6px;align-items:center"><span class="mut">${e(short(c.dir))}</span><span class="sp"></span><button class="new" data-new="${e(c.dir)}">＋ new ${c.tool==="claude"?"Claude":"Codex"}</button></div>`;
+    h=`<div style="margin-bottom:8px;display:flex;gap:6px;align-items:center"><span class="mut">${e(short(c.dir))}</span><span class="sp"></span><button class="new" data-new="${e(c.dir)}">＋ new ${e(AGENTS[c.tool]||c.tool)}</button></div>`;
     h+=rs.slice(0,300).map(r=>`<div class="r"><div class="rt"><span class="mut">${ago(r.last)}</span>${r.live?'<span class="live">● running</span>':""}<span class="sp"></span><button data-id="${e(r.id)}" data-live="${r.live?1:0}">Resume</button></div><div class="ttl">${e(r.title)||'<span class="mut">(no text)</span>'}</div><div class="mut">${e(r.id.slice(0,8))}</div></div>`).join("")||`<div class="mut">no sessions</div>`;
   }else if(c.s==="snaps"){
     const S=SN||[];const la=S.find(x=>x.name.startsWith("auto-"));const lastAuto=la?la.mtime:0;
@@ -122,7 +121,7 @@ async function loadSnaps(force){if(cur().s!=="snaps"&&!force)return;try{const d=
 function draw(){if(!D)return;topbar();body();if(cur().s==="snaps"&&!SN)loadSnaps(true)}
 async function tick(){try{const d=await (await fetch("/sessions/state")).json();if(V&&d.v!==V){location.reload();return}V=d.v;if(!localPref){skip=d.skip}if(!where)where=d.open_in||"window";
   if(!d.ok){document.getElementById("main").innerHTML='<div class="scr mut">scanning sessions…</div>';return}
-  const k=JSON.stringify([d.cwd,d.tty,d.rows.length,d.rows[0]?.id,Math.floor((d.rows[0]?.last||0)/60000),d.active.map(a=>a.pid+a.status),d.rows.filter(r=>r.live).map(r=>r.id)]);
+  const k=JSON.stringify([d.cwd,d.tty,d.rows.map(r=>[r.tool,r.id,r.title,Math.floor(r.last/60000),r.live]),d.active.map(a=>a.pid+a.status)]);
   if(k!==lastKey){const first=!D;D=d;lastKey=k;if(first||document.activeElement?.id!=="q")draw();else body()}}catch(_){document.getElementById("main").innerHTML='<div class="scr mut">panel is not responding</div>'}}
 tick();setInterval(tick,2000);setInterval(()=>loadSnaps(false),5000);
 </script></body></html>
