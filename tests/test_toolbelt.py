@@ -7,6 +7,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+from unittest.mock import AsyncMock
+from urllib.parse import urlencode
 
 import pytest
 
@@ -866,10 +868,63 @@ def _req(method, path, header=False):
 
 
 @pytest.mark.parametrize("path", ["/sessions/open?tool=claude", "/sessions/focus?tty=ttys001", "/settings/save",
-                                  "/snaps/save?name=x", "/snaps/restore?name=x", "/net/copy?name=eu-1"])
-def test_http_mutating_endpoints_need_post_and_header(t, path):
+                                  "/snaps/save?name=x", "/snaps/restore?name=x", "/net/copy?name=eu-1",
+                                  "/open-url?url=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F1"])
+def test_http_mutating_endpoints_need_post_and_header(t, monkeypatch, path):
+    run = AsyncMock(return_value=(0, ""))
+    monkeypatch.setattr(t, "run", run)
     assert asyncio.run(_http(t, _req("POST", path)))[0] == 403
     assert asyncio.run(_http(t, _req("GET", path)))[0] == 403
+    assert asyncio.run(_http(t, _req("GET", path, header=True)))[0] == 403
+    assert asyncio.run(_http(t, _req("OPTIONS", path, header=True)))[0] == 403
+    run.assert_not_awaited()
+
+
+@pytest.mark.parametrize("url", [
+    "https://github.com/owner/repo/pull/1",
+    "https://github.example.com/owner/repo/pull/2",
+    "http://github.internal:8080/owner/repo/pull/3",
+    "https://github.com/owner/repo/pull/4?label=needs+review&next=a%26b#discussion_r123",
+])
+def test_http_open_url_launches_browser_with_exact_url(t, monkeypatch, url):
+    run = AsyncMock(return_value=(0, ""))
+    monkeypatch.setattr(t, "run", run)
+    path = "/open-url?" + urlencode({"url": url})
+    assert asyncio.run(_http(t, _req("POST", path, header=True))) == (200, "ok")
+    run.assert_awaited_once_with(["/usr/bin/open", url])
+
+
+@pytest.mark.parametrize("url", [
+    "",
+    "/owner/repo/pull/1",
+    "//github.com/owner/repo/pull/1",
+    "github.com/owner/repo/pull/1",
+    "https://",
+    "https:///owner/repo/pull/1",
+    "https://[broken/pull/1",
+    "file:///etc/hosts",
+    "javascript:alert(1)",
+    "ftp://github.com/owner/repo/pull/1",
+    "-a Safari",
+    "https://github.com/owner/repo/pull/1 with spaces",
+    "https://github.com/owner/repo/pull/1\n",
+    "https://github.com/owner/repo/pull/1\r",
+    "https://github.com/owner/repo/pull/1\t",
+    "https://github.com/owner/repo/pull/1\x00",
+])
+def test_http_open_url_rejects_invalid_urls(t, monkeypatch, url):
+    run = AsyncMock(return_value=(0, ""))
+    monkeypatch.setattr(t, "run", run)
+    path = "/open-url?" + urlencode({"url": url})
+    assert asyncio.run(_http(t, _req("POST", path, header=True))) == (400, "invalid URL")
+    run.assert_not_awaited()
+
+
+def test_http_open_url_reports_launch_failure(t, monkeypatch):
+    monkeypatch.setattr(t, "run", AsyncMock(return_value=(1, "No application knows how to open the URL")))
+    path = "/open-url?" + urlencode({"url": "https://github.com/owner/repo/pull/1"})
+    assert asyncio.run(_http(t, _req("POST", path, header=True))) == (
+        502, "could not open URL: No application knows how to open the URL")
 
 
 def test_http_basics(t):
