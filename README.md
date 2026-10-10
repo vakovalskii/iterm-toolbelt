@@ -50,6 +50,14 @@ The "snapshots" screen in Sessions: **Save** captures the current window or all 
 - Autosave every 5 minutes (`"autosave": true`): only when something changed and at least one agent runs; the last 20 `auto-*` are kept. If all windows close at once, the last good snapshot is not overwritten by an empty one.
 - If an iTerm dynamic profile named `TermDeck` exists (title changes disabled), windows are restored with it and tab names stick.
 
+## Tests
+
+`tests/` covers the logic that does not need a running iTerm (the `iterm2` module is stubbed): secret masking,
+the Agent actions transcript reader, the Claude Code and Codex session scanner, running-agent detection,
+launch commands with proxies, settings save and validation (passwords never leave the config), network probes,
+Keenetic parsing, snapshots, the HTTP guard on state-changing endpoints, and a syntax check of every page script.
+They run in GitHub Actions on every push (`.github/workflows/tests.yml`); locally: `python3 -m pytest -q tests`.
+
 ## Config
 
 `~/.config/iterm-toolbelt/config.json` (mode 600, it may hold a proxy with a password). Everything is editable on the ⚙ page in Sessions (proxies, servers and the router in the **Network** section), or by hand, see `config.example.json`. The config is yours alone and never goes into the repo.
