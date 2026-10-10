@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 
@@ -373,11 +374,30 @@ def test_agent_command_other_tools(t):
 
 @pytest.mark.parametrize("tool, resume", [("pi", "pi --session"), ("omp", "omp -r")])
 def test_agent_command_pi_and_omp(t, tool, resume):
-    assert t.agent_command(tool, "", False) == tool
+    omp_new_config = os.path.join(t.HERE, "resources", "omp-new-session.yml")
+    new = tool if tool == "pi" else f"omp --config {shlex.quote(omp_new_config)}"
+    assert t.agent_command(tool, "", False) == new
     assert t.agent_command(tool, "session-1234", False) == f"{resume} session-1234"
     assert t.agent_command(tool, "id with space", False) == f"{resume} 'id with space'"
     t.CFG["agents"][tool].update(prefix="FOO=1", flags="--model fast")
     assert t.agent_command(tool, "session-1234", False) == f"FOO=1 {resume} session-1234 --model fast"
+    if tool == "omp":
+        assert t.agent_command(tool, "", False) == f"FOO=1 omp --model fast --config {shlex.quote(omp_new_config)}"
+        with open(omp_new_config) as f:
+            assert f.read().strip().endswith("autoResume: false")
+    else:
+        assert t.agent_command(tool, "", False) == "FOO=1 pi --model fast"
+
+
+def test_omp_new_quotes_config_path_with_spaces(t, monkeypatch):
+    monkeypatch.setattr(t, "HERE", "/tmp/my tools")
+    assert t.agent_command("omp", "", False) == "omp --config '/tmp/my tools/resources/omp-new-session.yml'"
+
+
+def test_omp_new_overlay_follows_user_config(t):
+    t.CFG["agents"]["omp"]["flags"] = "--config /tmp/user.yml"
+    overlay = shlex.quote(os.path.join(t.HERE, "resources", "omp-new-session.yml"))
+    assert t.agent_command("omp", "", False) == f"omp --config /tmp/user.yml --config {overlay}"
 
 
 def test_open_agent_rejects_bad_input_before_touching_iterm(t, tmp_path):

@@ -890,6 +890,8 @@ def agent_command(tool: str, sid: str, skip: bool, proxy: str = "") -> str | Non
     elif tool in ("pi", "omp"):
         flags = a.get("flags") or ""
         core = f"{tool} {'--session' if tool == 'pi' else '-r'} {q}" if sid else tool
+        if tool == "omp" and not sid:
+            flags = (flags + " --config " + shlex.quote(os.path.join(HERE, "resources", "omp-new-session.yml"))).strip()
     elif sid:
         return {"qwen": f"qwen -r {q}", "kilo": f"kilo resume {q}", "opencode": f"opencode -s {q}",
                 "cursor": f"cursor-agent --resume {q}"}.get(tool)
