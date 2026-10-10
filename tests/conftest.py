@@ -31,13 +31,15 @@ def t(tmp_path, monkeypatch):
     monkeypatch.setattr(tb, "SCAN_FILE", str(cfg_dir / "scan-cache.json"))
     monkeypatch.setattr(tb, "CLAUDE_DIR", str(tmp_path / "claude"))
     monkeypatch.setattr(tb, "CODEX_DIR", str(tmp_path / "codex"))
+    monkeypatch.setattr(tb, "PI_DIR", str(tmp_path / "pi"))
+    monkeypatch.setattr(tb, "OMP_DIR", str(tmp_path / "omp"))
     monkeypatch.setattr(tb, "SNAP_DIR", str(tmp_path / "snaps"))
     cfg = copy.deepcopy(tb.DEFAULTS)
     cfg["proxies"] = copy.deepcopy(PROXIES)
     tb.save_config(cfg)
     tb.CFG.clear()
     tb.CFG.update(tb.load_config())
-    for d in (tb.CACHE, tb.SCAN, tb.TRANSCRIPTS):
+    for d in (tb.CACHE, tb.SCAN, tb.PI_NAMES, tb.TRANSCRIPTS):
         d.clear()
     tb.STATE.update({"session_id": None, "session_name": "", "cwd": None, "agent": None, "tty": ""})
     return tb

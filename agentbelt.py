@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""agentbelt: an iTerm2 sidebar for AI coding agents (Claude Code, Codex).
+"""agentbelt: an iTerm2 sidebar for AI coding agents (Claude Code, Codex, pi, omp).
 
 Tabs (View → Toolbelt):
   ◆ Git & PR         branch, ahead/behind, changed files with diffs, PR and CI, worktrees
   ◆ Agent actions    what Claude Code is doing in the active pane: commands, edits, reads
-  ◆ Sessions         Claude Code and Codex sessions: projects, resume, running agents
+  ◆ Sessions         Claude Code, Codex, pi and omp sessions: projects, resume, running agents
   Settings (⚙ in the Sessions tab): agent proxy and flags, tabs, repo checks
 
 Pages are served by an HTTP server on 127.0.0.1 (port from the config) and shown by iTerm2
@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -29,6 +30,8 @@ CONFIG_DIR = os.path.expanduser(os.getenv("AGENTBELT_HOME") or os.getenv("ITERM_
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 CODEX_DIR = os.path.expanduser("~/.codex")
+PI_DIR = os.path.expanduser("~/.pi")
+OMP_DIR = os.path.expanduser("~/.omp")
 VERSION = "0.1.0"
 BOOT = str(int(time.time()))
 
@@ -40,6 +43,8 @@ DEFAULTS = {
     "agents": {
         "claude": {"prefix": "", "flags": "", "skip_permissions": False},
         "codex": {"prefix": "", "flags": ""},
+        "pi": {"prefix": "", "flags": ""},
+        "omp": {"prefix": "", "flags": ""},
     },
     # Network block in Agent actions (local only, see "Network" below)
     "proxies": [],
@@ -89,7 +94,7 @@ CFG = load_config()
 
 NOPROXY_ENV = {k: v for k, v in os.environ.items()
                if k.lower() not in ("https_proxy", "http_proxy", "all_proxy")}
-NOPROXY_ENV["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + NOPROXY_ENV.get("PATH", "")
+NOPROXY_ENV["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:" + NOPROXY_ENV.get("PATH", "")
 NOPROXY_ENV["GH_PROMPT_DISABLED"] = "1"
 NOPROXY_ENV["GIT_TERMINAL_PROMPT"] = "0"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -99,6 +104,9 @@ CONN: dict = {}
 CACHE: dict[str, tuple[float, object]] = {}
 _RUNNING: set[str] = set()
 _FETCHED: dict[str, float] = {}
+_PI_RESUMES: dict[tuple[int, int], tuple[object, float]] = {}
+_PI_RESUMES_LOCK = threading.Lock()
+_PI_RESUME_TIMEOUT = 30.0
 
 
 async def run(cmd: list[str], cwd: str | None = None, timeout: float = 10.0) -> tuple[int, str]:
@@ -517,7 +525,9 @@ def agent_item(i: int) -> str:
 
 SCAN: dict[str, tuple[float, dict | None]] = {}
 SCAN_FILE = os.path.join(CONFIG_DIR, "scan-cache.json")
-SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{4,128}$")
+# device, inode, read offset, mtime_ns, last complete name, unfinished line
+PI_NAMES: dict[str, tuple[int, int, int, int, str | None, bytes]] = {}
+SAFE_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,126}[A-Za-z0-9])?$")
 
 
 def _first_text(content) -> str:
@@ -567,15 +577,102 @@ def _tail_title(path: str) -> str:
     except OSError:
         return ""
     for line in reversed(tail.splitlines()):
-        if '"ai-title"' in line or '"type":"summary"' in line or '"custom-title"' in line:
+        if ('"ai-title"' in line or '"type":"summary"' in line or '"custom-title"' in line
+                or '"session_info"' in line):
             try:
                 d = json.loads(line)
             except ValueError:
                 continue
-            t = d.get("title") or d.get("aiTitle") or d.get("summary") or d.get("customTitle")
+            t = d.get("title") or d.get("aiTitle") or d.get("summary") or d.get("customTitle") or d.get("name")
             if isinstance(t, str) and t.strip():
                 return t.strip()
     return ""
+
+
+def _pi_name_from_line(line: bytes) -> str | None:
+    if b'"session_info"' not in line:
+        return None
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(entry, dict) or entry.get("type") != "session_info":
+        return None
+    name = entry.get("name")
+    return name.strip() if isinstance(name, str) else ""
+
+
+def _last_pi_name(path: str) -> str | None:
+    """Find the latest Pi name; after the first scan, read only appended bytes."""
+    try:
+        with open(path, "rb") as f:
+            st = os.fstat(f.fileno())
+            cached = PI_NAMES.get(path)
+            if cached:
+                dev, ino, offset, mtime, name, pending = cached
+                if (dev, ino) == (st.st_dev, st.st_ino) and st.st_size >= offset and (
+                        st.st_size > offset or st.st_mtime_ns == mtime):
+                    f.seek(offset)
+                    appended = f.read()
+                    parts = (pending + appended).split(b"\n")
+                    for line in parts[:-1]:
+                        found = _pi_name_from_line(line)
+                        if found is not None:
+                            name = found
+                    pending = parts[-1]
+                    PI_NAMES[path] = (dev, ino, f.tell(), st.st_mtime_ns, name, pending)
+                    found = _pi_name_from_line(pending)
+                    return found if found is not None else name
+
+            # Pi writes JSONL. Keep the last unterminated line for the next append.
+            pos, fragments = st.st_size, []
+            if pos:
+                f.seek(pos - 1)
+                if f.read(1) != b"\n":
+                    while pos:
+                        start = max(0, pos - 65536)
+                        f.seek(start)
+                        block = f.read(pos - start)
+                        cut = block.rfind(b"\n")
+                        fragments.append(block[cut + 1:])
+                        pos = start
+                        if cut >= 0:
+                            break
+                    pending = b"".join(reversed(fragments))
+                else:
+                    pending = b""
+            else:
+                pending = b""
+
+            name, pos, fragments = None, st.st_size - len(pending), []
+            while pos:
+                start = max(0, pos - 65536)
+                f.seek(start)
+                parts = f.read(pos - start).split(b"\n")
+                pos = start
+                fragments.append(parts[-1])
+                if len(parts) == 1:
+                    continue
+                name = _pi_name_from_line(b"".join(reversed(fragments)))
+                if name is not None:
+                    break
+                for line in reversed(parts[1:-1]):
+                    name = _pi_name_from_line(line)
+                    if name is not None:
+                        break
+                if name is not None:
+                    break
+                fragments = [parts[0]]
+            else:
+                if fragments:
+                    name = _pi_name_from_line(b"".join(reversed(fragments)))
+
+            PI_NAMES[path] = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, name, pending)
+            found = _pi_name_from_line(pending)
+            return found if found is not None else name
+    except OSError:
+        PI_NAMES.pop(path, None)
+        return None
 
 
 def _scan_claude(path: str) -> dict | None:
@@ -613,6 +710,28 @@ def _scan_codex(path: str) -> dict | None:
     return {"id": sid, "tool": "codex", "dir": cwd, "title": _clean_title(first)}
 
 
+def _scan_pi_like(path: str, tool: str) -> dict | None:
+    """Pi and omp share a session header and message format; omp may put a title before it."""
+    sid, cwd, title, first = "", "", "", ""
+    for d in _read_head(path, need=(b'"cwd"', b'"title"', b'"role"')):
+        if d.get("type") == "title" and tool == "omp":
+            title = d.get("title") or title
+        elif d.get("type") == "session":
+            sid, cwd = d.get("id", ""), d.get("cwd", "")
+            title = title or d.get("title") or ""
+        elif d.get("type") == "message" and not first:
+            msg = d.get("message") or {}
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                first = _first_text(msg.get("content"))
+        if tool == "omp" and sid and cwd and (title or first):
+            break
+    if not isinstance(sid, str) or not sid or not isinstance(cwd, str) or not cwd:
+        return None
+    name = _last_pi_name(path) if tool == "pi" else None
+    return {"id": sid, "tool": tool, "dir": cwd,
+            "title": _clean_title((name if name is not None else title) or first)}
+
+
 def _scan_all() -> list:
     """stat every session file, parse only new/changed ones. The cache lives on disk:
     after a restart only changed files are read again."""
@@ -624,6 +743,9 @@ def _scan_all() -> list:
             pass
     files = [(p, _scan_claude) for p in glob.glob(os.path.join(CLAUDE_DIR, "projects", "*", "*.jsonl"))]
     files += [(p, _scan_codex) for p in glob.glob(os.path.join(CODEX_DIR, "sessions", "*", "*", "*", "*.jsonl"))]
+    for tool, root in (("pi", PI_DIR), ("omp", OMP_DIR)):
+        files += [(p, lambda path, tool=tool: _scan_pi_like(path, tool))
+                  for p in glob.glob(os.path.join(root, "agent", "sessions", "*", "*.jsonl"))]
     rows, seen, changed = [], set(), False
     for path, fn in files:
         seen.add(path)
@@ -644,6 +766,7 @@ def _scan_all() -> list:
     for p in list(SCAN):
         if p not in seen:
             SCAN.pop(p, None)
+            PI_NAMES.pop(p, None)
             changed = True
     if changed:
         try:
@@ -657,9 +780,102 @@ def _scan_all() -> list:
     return rows
 
 
+def _is_pi_command(cmd: str) -> bool:
+    """Recognize Pi itself, including Node/Bun launches before Pi sets its process title."""
+    args = cmd.split()
+    if not args:
+        return False
+    exe = os.path.basename(args[0])
+    if exe in ("pi", "pi-rpc"):
+        return True
+    return exe in ("node", "bun") and any(
+        re.search(r"/@earendil-works/pi-coding-agent/dist/(?:bundle/)?cli\.js$", arg)
+        or arg.endswith("/bin/pi") for arg in args[1:])
+
+
+async def _pi_processes(ps: str) -> list | None:
+    """Find Pi processes and their working directories; None means the check failed."""
+    out = []
+    for line in ps.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, tty, stat, cmd = parts
+        if not pid.isdecimal() or stat.startswith("Z") or not _is_pi_command(cmd):
+            continue
+        rc, cw = await run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], timeout=3)
+        d = next((l[1:] for l in cw.splitlines() if l.startswith("n")), "")
+        if rc or not d:
+            try:
+                os.kill(int(pid), 0)
+            except ProcessLookupError:
+                continue  # the process exited between ps and lsof
+            except OSError:
+                pass
+            return None
+        out.append({"tool": "pi", "pid": int(pid), "id": "", "dir": d,
+                    "name": "", "status": "", "since": 0, "tty": tty, "stopped": stat.startswith("T")})
+    return out
+
+
+async def _pi_resume_guard(d: str) -> str:
+    """Pi does not expose its current session ID, so guard the whole project."""
+    if not d:
+        return "choose a project before resuming pi"
+    rc, ps = await run(["ps", "-xo", "pid=,tty=,stat=,command="], timeout=5)
+    if rc:
+        return "could not check running pi processes"
+    agents = await _pi_processes(ps)
+    if agents is None:
+        return "could not check running pi processes"
+    if any(_same_dir(a["dir"], d) for a in agents):
+        return "pi is already running in this project; close it before resuming"
+    return ""
+
+
+def _reserve_pi_resume(d: str) -> tuple[tuple[int, int], object] | None:
+    """Reserve one project before the process check; stat also resolves symlinks and case aliases."""
+    st = os.stat(d)
+    key = (st.st_dev, st.st_ino)
+    now = time.monotonic()
+    with _PI_RESUMES_LOCK:
+        for old_key, (_, until) in list(_PI_RESUMES.items()):
+            if until <= now:
+                _PI_RESUMES.pop(old_key)
+        if key in _PI_RESUMES:
+            return None
+        ticket = object()
+        _PI_RESUMES[key] = (ticket, now + 2 * _PI_RESUME_TIMEOUT)
+    return key, ticket
+
+
+def _release_pi_resume(reservation: tuple[tuple[int, int], object]) -> None:
+    key, ticket = reservation
+    with _PI_RESUMES_LOCK:
+        if _PI_RESUMES.get(key, (None, 0))[0] is ticket:
+            _PI_RESUMES.pop(key, None)
+
+
+def _renew_pi_resume(reservation: tuple[tuple[int, int], object]) -> bool:
+    """Keep the reservation briefly after sending while Pi starts."""
+    key, ticket = reservation
+    with _PI_RESUMES_LOCK:
+        if _PI_RESUMES.get(key, (None, 0))[0] is not ticket:
+            return False
+        _PI_RESUMES[key] = (ticket, time.monotonic() + _PI_RESUME_TIMEOUT)
+    return True
+
+
+def _same_dir(left: str, right: str) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return os.path.realpath(left) == os.path.realpath(right)
+
+
 async def _active_agents() -> list:
-    """Running claude (via ~/.claude/sessions/<pid>.json) and codex (via processes)."""
-    _, ps = await run(["ps", "-axo", "pid=,tty=,stat=,command="], timeout=5)
+    """Running Claude (session metadata), Codex and Pi (processes)."""
+    _, ps = await run(["ps", "-xo", "pid=,tty=,stat=,command="], timeout=5)
     ttys, stopped = {}, set()
     for line in ps.splitlines():
         parts = line.split(None, 3)
@@ -697,6 +913,7 @@ async def _active_agents() -> list:
             _, cw = await run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], timeout=3)
             d = next((l[1:] for l in cw.splitlines() if l.startswith("n")), "")
             out.append({"tool": "codex", "pid": int(pid), "id": "", "dir": d, "name": "", "status": "", "since": 0})
+    out.extend(a for a in (await _pi_processes(ps) or []) if not a["stopped"])
     for a in out:
         a["tty"] = ttys.get(str(a["pid"]), "")
     return out
@@ -753,6 +970,11 @@ def agent_command(tool: str, sid: str, skip: bool, proxy: str = "") -> str | Non
     elif tool == "codex":
         flags = a.get("flags") or ""
         core = f"codex resume {q}" if sid else "codex"
+    elif tool in ("pi", "omp"):
+        flags = a.get("flags") or ""
+        core = f"{tool} {'--session' if tool == 'pi' else '-r'} {q}" if sid else tool
+        if tool == "omp" and not sid:
+            flags = (flags + " --config " + shlex.quote(os.path.join(HERE, "resources", "omp-new-session.yml"))).strip()
     elif sid:
         return {"qwen": f"qwen -r {q}", "kilo": f"kilo resume {q}", "opencode": f"opencode -s {q}",
                 "cursor": f"cursor-agent --resume {q}"}.get(tool)
@@ -778,35 +1000,57 @@ async def open_agent(q: dict) -> str:
     conn = CONN.get("c")
     if conn is None:
         return "no connection to iTerm"
-    app = await iterm2.async_get_app(conn)
-    cur = app.current_terminal_window
-    if q.get("where") == "tab" and cur is not None:
-        tab = await cur.async_create_tab()
-        win_id, tab_id = cur.window_id, tab.tab_id
-    else:
-        w = await iterm2.Window.async_create(conn)
-        win_id, tab_id = w.window_id, w.current_tab.tab_id
-    # a new window does not hand over its session right away, and a helper bash runs first:
-    # re-fetch the session by id and wait for the user's shell, otherwise the text is lost
-    shell = os.path.basename(os.environ.get("SHELL", "zsh"))
-    sess = None
-    for _ in range(50):
-        await asyncio.sleep(0.2)
+    reservation = None
+    if tool == "pi" and sid:
+        if not d:
+            return "choose a project before resuming pi"
         try:
-            await app.async_refresh()
-            win = app.get_window_by_id(win_id)
-            tab = win and next((t for t in win.tabs if t.tab_id == tab_id), None)
-            sess = tab and tab.current_session
-            if sess and (await sess.async_get_variable("jobName")) in (shell, "-" + shell):
-                break
-        except Exception:  # noqa: BLE001
-            sess = None
-    if not sess:
-        return "iTerm did not return the new session"
-    await asyncio.sleep(0.3)
-    await sess.async_send_text((f"cd {shlex.quote(d)} && " if d else "") + cmd + "\n")
-    await sess.async_activate(select_tab=True, order_window_front=True)
-    return "ok"
+            reservation = _reserve_pi_resume(d)
+        except OSError:
+            return f"no such directory: {d}"
+        if reservation is None:
+            return "pi is already starting in this project"
+    sent = False
+    try:
+        if reservation:
+            reason = await _pi_resume_guard(d)
+            if reason:
+                return reason
+        app = await iterm2.async_get_app(conn)
+        cur = app.current_terminal_window
+        if q.get("where") == "tab" and cur is not None:
+            tab = await cur.async_create_tab()
+            win_id, tab_id = cur.window_id, tab.tab_id
+        else:
+            w = await iterm2.Window.async_create(conn)
+            win_id, tab_id = w.window_id, w.current_tab.tab_id
+        # a new window does not hand over its session right away, and a helper bash runs first:
+        # re-fetch the session by id and wait for the user's shell, otherwise the text is lost
+        shell = os.path.basename(os.environ.get("SHELL", "zsh"))
+        sess = None
+        for _ in range(50):
+            await asyncio.sleep(0.2)
+            try:
+                await app.async_refresh()
+                win = app.get_window_by_id(win_id)
+                tab = win and next((t for t in win.tabs if t.tab_id == tab_id), None)
+                sess = tab and tab.current_session
+                if sess and (await sess.async_get_variable("jobName")) in (shell, "-" + shell):
+                    break
+            except Exception:  # noqa: BLE001
+                sess = None
+        if not sess:
+            return "iTerm did not return the new session"
+        await asyncio.sleep(0.3)
+        if reservation and not _renew_pi_resume(reservation):
+            return "pi resume request expired; retry"
+        sent = True  # sending may succeed even if iTerm reports an error afterward
+        await sess.async_send_text((f"cd {shlex.quote(d)} && " if d else "") + cmd + "\n")
+        await sess.async_activate(select_tab=True, order_window_front=True)
+        return "ok"
+    finally:
+        if reservation and not sent:
+            _release_pi_resume(reservation)
 
 
 async def focus_tty(tty: str) -> str:

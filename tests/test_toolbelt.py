@@ -2,8 +2,11 @@ import asyncio
 import json
 import os
 import re
+import runpy
+import shlex
 import shutil
 import subprocess
+import sys
 from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 
@@ -175,6 +178,161 @@ def test_scan_codex(t, tmp_path):
     assert t._scan_codex(str(p)) == {"id": "cx-1", "tool": "codex", "dir": "/w/r", "title": "Add tests"}
 
 
+def _pi_like_session(t, tool, sid, rows):
+    root = t.PI_DIR if tool == "pi" else t.OMP_DIR
+    d = os.path.join(root, "agent", "sessions", "project")
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, f"2026-10-10T00-00-00_{sid}.jsonl")
+    _jl(p, rows, "w")
+    return p
+
+
+@pytest.mark.parametrize("tool", ["pi", "omp"])
+def test_scan_pi_like_reads_session_and_first_user_message(t, tool):
+    rows = [{"type": "session", "version": 3, "id": "session-1234", "cwd": "/w/repo"},
+            {"type": "model_change", "id": "event-1"},
+            {"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "ignore"}]}},
+            {"type": "message", "message": {"role": "user", "content": [
+                {"type": "image", "data": "..."}, {"type": "text", "text": "Fix the login page"}]}}]
+    p = _pi_like_session(t, tool, "session-1234", rows)
+    assert t._scan_pi_like(p, tool) == {"id": "session-1234", "tool": tool,
+                                         "dir": "/w/repo", "title": "Fix the login page"}
+
+
+def test_scan_omp_accepts_title_before_session_header(t):
+    p = _pi_like_session(t, "omp", "session-2345", [
+        {"type": "title", "title": "Login page fix"},
+        {"type": "session", "version": 3, "id": "session-2345", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": [
+            {"type": "text", "text": "Fix the login page"}]}}])
+    assert t._scan_pi_like(p, "omp") == {"id": "session-2345", "tool": "omp",
+                                        "dir": "/w/repo", "title": "Login page fix"}
+
+
+def test_scan_pi_prefers_session_name(t):
+    p = _pi_like_session(t, "pi", "named-1234", [
+        {"type": "session", "id": "named-1234", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": "Original prompt"}},
+        {"type": "session_info", "name": "Chosen name"}])
+    assert t._scan_pi_like(p, "pi")["title"] == "Chosen name"
+
+
+def test_scan_pi_keeps_early_name_after_long_session(t):
+    p = _pi_like_session(t, "pi", "named-5678", [
+        {"type": "session", "id": "named-5678", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": "Original prompt"}},
+        {"type": "session_info", "name": "Chosen name"},
+        {"type": "usage", "details": "x" * 70_000}])
+    assert t._scan_pi_like(p, "pi")["title"] == "Chosen name"
+
+
+def test_scan_pi_uses_last_name_between_head_and_tail(t):
+    p = _pi_like_session(t, "pi", "named-9012", [
+        {"type": "session", "id": "named-9012", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": "Original prompt"}},
+        {"type": "session_info", "name": "Old name"},
+        {"type": "usage", "details": "x" * 600_000},
+        {"type": "session_info", "name": "Latest name"},
+        {"type": "usage", "details": "x" * 70_000}])
+    assert t._scan_pi_like(p, "pi")["title"] == "Latest name"
+
+
+def test_scan_pi_cleared_name_falls_back_to_first_message(t):
+    p = _pi_like_session(t, "pi", "named-3456", [
+        {"type": "session", "id": "named-3456", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": "Original prompt"}},
+        {"type": "session_info", "name": "Old name"},
+        {"type": "usage", "details": "x" * 70_000},
+        {"type": "session_info", "name": "  "},
+        {"type": "usage", "details": "x" * 70_000}])
+    assert t._scan_pi_like(p, "pi")["title"] == "Original prompt"
+
+
+def test_pi_name_scan_reads_only_appended_bytes(t, monkeypatch):
+    rows = [{"type": "session", "id": "growing-1234", "cwd": "/w/repo"}]
+    rows += [{"type": "usage", "details": "x" * 200_000} for _ in range(8)]
+    p = _pi_like_session(t, "pi", "growing-1234", rows)
+    real_open = open
+    read_bytes = 0
+
+    class CountingFile:
+        def __init__(self, file):
+            self.file = file
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.file.__exit__(*args)
+
+        def __getattr__(self, attr):
+            return getattr(self.file, attr)
+
+        def read(self, *args):
+            nonlocal read_bytes
+            data = self.file.read(*args)
+            read_bytes += len(data)
+            return data
+
+    def counting_open(path, mode="r", *args, **kwargs):
+        file = real_open(path, mode, *args, **kwargs)
+        return CountingFile(file) if path == p and mode == "rb" else file
+
+    monkeypatch.setattr(t, "open", counting_open, raising=False)
+    assert t._last_pi_name(p) is None
+    assert read_bytes > 1_000_000
+    read_bytes = 0
+    _jl(p, [{"type": "message", "message": {"role": "assistant", "content": "done"}}], "a")
+    assert t._last_pi_name(p) is None
+    assert read_bytes < 1000
+
+
+def test_pi_name_scan_handles_partial_line_replacement_and_truncation(t):
+    p = _pi_like_session(t, "pi", "changing-1234", [
+        {"type": "session", "id": "changing-1234", "cwd": "/w/repo"},
+        {"type": "session_info", "name": "Old name"}])
+    assert t._last_pi_name(p) == "Old name"
+
+    with open(p, "ab") as f:
+        f.write(b'{"type":"session_info","name":"New')
+    assert t._last_pi_name(p) == "Old name"
+    with open(p, "ab") as f:
+        f.write(b' name"}\n')
+    assert t._last_pi_name(p) == "New name"
+    _jl(p, [{"type": "session_info", "name": "  "}], "a")
+    assert t._last_pi_name(p) == ""
+
+    replacement = p + ".new"
+    _jl(replacement, [{"type": "session_info", "name": "Replacement"}], "w")
+    os.replace(replacement, p)
+    assert t._last_pi_name(p) == "Replacement"
+
+    with open(p, "wb"):
+        pass
+    assert t._last_pi_name(p) is None
+    _jl(p, [{"type": "session_info", "name": "After truncate"}], "w")
+    assert t._last_pi_name(p) == "After truncate"
+
+    old = os.stat(p)
+    _jl(p, [{"type": "session_info", "name": "Another title!"}], "w")
+    assert os.path.getsize(p) == old.st_size
+    os.utime(p, ns=(old.st_atime_ns, old.st_mtime_ns + 1_000_000))
+    assert t._last_pi_name(p) == "Another title!"
+
+
+def test_scan_omp_uses_legacy_header_title(t):
+    p = _pi_like_session(t, "omp", "legacy-1234", [
+        {"type": "session", "id": "legacy-1234", "cwd": "/w/repo", "title": "Older title"}])
+    assert t._scan_pi_like(p, "omp")["title"] == "Older title"
+
+
+def test_scan_pi_like_ignores_files_without_session_header(t):
+    p = _pi_like_session(t, "omp", "missing", [
+        {"type": "title", "title": "Orphaned title"},
+        {"type": "message", "message": {"role": "user", "content": "hello"}}])
+    assert t._scan_pi_like(p, "omp") is None
+
+
 def test_scan_all_caches_on_disk_and_drops_deleted_files(t):
     a = _claude_session(t, "s-a", "/w/a", [{"type": "user", "cwd": "/w/a", "message": {"content": "first"}}])
     b = _claude_session(t, "s-b", "/w/b", [{"type": "user", "cwd": "/w/b", "message": {"content": "second"}}])
@@ -188,7 +346,35 @@ def test_scan_all_caches_on_disk_and_drops_deleted_files(t):
     assert b not in json.load(open(t.SCAN_FILE))
 
 
+def test_scan_all_finds_and_caches_pi_and_omp(t, monkeypatch):
+    pi = _pi_like_session(t, "pi", "pi-1234", [
+        {"type": "session", "id": "pi-1234", "cwd": "/w/pi"},
+        {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "Pi task"}]}}])
+    omp = _pi_like_session(t, "omp", "omp-1234", [
+        {"type": "title", "title": "Omp task"},
+        {"type": "session", "id": "omp-1234", "cwd": "/w/omp"}])
+    os.utime(pi, (1, 1_000_000))
+    os.utime(omp, (1, 2_000_000))
+    rows = t._scan_all()
+    assert [(r["tool"], r["id"], r["dir"]) for r in rows] == [
+        ("omp", "omp-1234", "/w/omp"), ("pi", "pi-1234", "/w/pi")]
+    assert pi in t.SCAN and omp in t.SCAN
+    assert pi in json.load(open(t.SCAN_FILE)) and omp in json.load(open(t.SCAN_FILE))
+
+    monkeypatch.setattr(t, "_scan_pi_like", lambda *_: pytest.fail("unchanged session was parsed again"))
+    assert [r["id"] for r in t._scan_all()] == ["omp-1234", "pi-1234"]
+
+
 # ─────────────── running agents ───────────────
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="uses the macOS system lsof")
+def test_pi_processes_with_restricted_service_path(t, monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.chdir(tmp_path)
+    service = runpy.run_path(t.__file__)
+    processes = asyncio.run(service["_pi_processes"](f"{os.getpid()} ?? S pi"))
+    assert processes and os.path.samefile(processes[0]["dir"], tmp_path)
 
 
 def test_active_agents_hide_suspended_and_duplicate_processes(t, monkeypatch):
@@ -213,6 +399,20 @@ def test_active_agents_hide_suspended_and_duplicate_processes(t, monkeypatch):
     assert claude == [("S1", 102), ("S3", 104)]  # 101 is an older process of S1, 103 is stopped
     codex = [a for a in out if a["tool"] == "codex"]
     assert [(a["pid"], a["dir"], a["tty"]) for a in codex] == [(200, "/w/codexdir", "ttys006")]
+
+
+def test_active_agents_includes_pi_without_a_terminal_but_not_suspended(t, monkeypatch):
+    ps = "300 ?? S pi\n301 ttys001 T pi\n302 ?? S node /opt/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        if cmd[0] == "ps":
+            return 0, ps
+        return 0, f"p{cmd[3]}\nn/w/project\n"
+
+    monkeypatch.setattr(t, "run", fake_run)
+    out = asyncio.run(t._active_agents())
+    assert [(a["pid"], a["tty"], a["dir"]) for a in out if a["tool"] == "pi"] == [
+        (300, "??", "/w/project"), (302, "??", "/w/project")]
 
 
 # ─────────────── launching agents ───────────────
@@ -257,12 +457,226 @@ def test_agent_command_other_tools(t):
     assert t.agent_command("claude", "id with space", False) == "claude --resume 'id with space'"
 
 
+@pytest.mark.parametrize("tool, resume", [("pi", "pi --session"), ("omp", "omp -r")])
+def test_agent_command_pi_and_omp(t, tool, resume):
+    omp_new_config = os.path.join(t.HERE, "resources", "omp-new-session.yml")
+    new = tool if tool == "pi" else f"omp --config {shlex.quote(omp_new_config)}"
+    assert t.agent_command(tool, "", False) == new
+    assert t.agent_command(tool, "session-1234", False) == f"{resume} session-1234"
+    assert t.agent_command(tool, "id with space", False) == f"{resume} 'id with space'"
+    t.CFG["agents"][tool].update(prefix="FOO=1", flags="--model fast")
+    assert t.agent_command(tool, "session-1234", False) == f"FOO=1 {resume} session-1234 --model fast"
+    if tool == "omp":
+        assert t.agent_command(tool, "", False) == f"FOO=1 omp --model fast --config {shlex.quote(omp_new_config)}"
+        with open(omp_new_config) as f:
+            assert f.read().strip().endswith("autoResume: false")
+    else:
+        assert t.agent_command(tool, "", False) == "FOO=1 pi --model fast"
+
+
+def test_omp_new_quotes_config_path_with_spaces(t, monkeypatch):
+    monkeypatch.setattr(t, "HERE", "/tmp/my tools")
+    assert t.agent_command("omp", "", False) == "omp --config '/tmp/my tools/resources/omp-new-session.yml'"
+
+
+def test_omp_new_overlay_follows_user_config(t):
+    t.CFG["agents"]["omp"]["flags"] = "--config /tmp/user.yml"
+    overlay = shlex.quote(os.path.join(t.HERE, "resources", "omp-new-session.yml"))
+    assert t.agent_command("omp", "", False) == f"omp --config /tmp/user.yml --config {overlay}"
+
+
 def test_open_agent_rejects_bad_input_before_touching_iterm(t, tmp_path):
     assert asyncio.run(t.open_agent({"id": "../../etc", "tool": "claude"})) == "bad id"
+    assert asyncio.run(t.open_agent({"id": "x", "tool": "pi"})) == "no connection to iTerm"
     assert asyncio.run(t.open_agent({"tool": "claude", "proxy": "missing"})) == "cannot launch claude via missing"
     assert asyncio.run(t.open_agent({"tool": "claude", "dir": str(tmp_path / "nope")})).startswith("no such directory")
     t.CONN.clear()
     assert asyncio.run(t.open_agent({"tool": "claude"})) == "no connection to iTerm"
+
+
+@pytest.mark.parametrize("stat,tty", [("S", "??"), ("T", "ttys001")])
+def test_open_agent_blocks_pi_resume_in_project_with_pi_process(t, monkeypatch, tmp_path, stat, tty):
+    project = tmp_path / "project"
+    project.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    monkeypatch.setitem(t.CONN, "c", object())
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        if cmd[0] == "ps":
+            return 0, f"300 {tty} {stat} pi\n"
+        return 0, f"p300\nn{project}\n"
+
+    monkeypatch.setattr(t, "run", fake_run)
+    assert asyncio.run(t.open_agent({"tool": "pi", "id": "session-1", "dir": str(alias)})) == (
+        "pi is already running in this project; close it before resuming")
+
+
+def test_open_agent_reserves_pi_project_during_process_check(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    monkeypatch.setitem(t.CONN, "c", object())
+    monkeypatch.setattr(t, "_PI_RESUMES", {})
+    calls = 0
+
+    async def scenario():
+        nonlocal calls
+        entered, proceed = asyncio.Event(), asyncio.Event()
+
+        async def guard(_):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                entered.set()
+                await proceed.wait()
+            return "could not check running pi processes"
+
+        monkeypatch.setattr(t, "_pi_resume_guard", guard)
+        first = asyncio.create_task(t.open_agent({"tool": "pi", "id": "session-1", "dir": str(project)}))
+        await entered.wait()
+        assert await t.open_agent({"tool": "pi", "id": "session-1", "dir": str(alias)}) == (
+            "pi is already starting in this project")
+        assert calls == 1
+        proceed.set()
+        assert await first == "could not check running pi processes"
+        assert await t.open_agent({"tool": "pi", "id": "session-1", "dir": str(alias)}) == (
+            "could not check running pi processes")
+        assert calls == 2  # an error before launch releases the reservation
+
+    asyncio.run(scenario())
+
+
+def test_open_agent_keeps_pi_reservation_after_send(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setitem(t.CONN, "c", object())
+    monkeypatch.setattr(t, "_PI_RESUMES", {})
+    commands = []
+
+    class Session:
+        async def async_get_variable(self, name):
+            return os.path.basename(os.environ.get("SHELL", "zsh"))
+
+        async def async_send_text(self, command):
+            commands.append(command)
+
+        async def async_activate(self, **kwargs):
+            pass
+
+    session = Session()
+    tab = type("Tab", (), {"tab_id": "tab", "current_session": session})()
+    window = type("Window", (), {"window_id": "window", "current_tab": tab, "tabs": [tab]})()
+
+    class WindowAPI:
+        @staticmethod
+        async def async_create(conn):
+            return window
+
+    class App:
+        current_terminal_window = None
+
+        async def async_refresh(self):
+            pass
+
+        def get_window_by_id(self, window_id):
+            return window
+
+    async def get_app(conn):
+        return App()
+
+    async def guard(_):
+        return ""  # Pi has not yet appeared in ps
+
+    monkeypatch.setattr(t.iterm2, "Window", WindowAPI, raising=False)
+    monkeypatch.setattr(t.iterm2, "async_get_app", get_app, raising=False)
+    monkeypatch.setattr(t, "_pi_resume_guard", guard)
+
+    async def scenario():
+        q = {"tool": "pi", "id": "session-1", "dir": str(project)}
+        assert await t.open_agent(q) == "ok"
+        assert await t.open_agent(q) == "pi is already starting in this project"
+        assert len(commands) == 1
+
+    asyncio.run(scenario())
+
+
+def test_open_agent_releases_pi_reservation_if_iterm_fails(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setitem(t.CONN, "c", object())
+    monkeypatch.setattr(t, "_PI_RESUMES", {})
+
+    async def guard(_):
+        return ""
+
+    async def get_app(conn):
+        raise RuntimeError("iTerm is unavailable")
+
+    monkeypatch.setattr(t, "_pi_resume_guard", guard)
+    monkeypatch.setattr(t.iterm2, "async_get_app", get_app, raising=False)
+    with pytest.raises(RuntimeError, match="iTerm is unavailable"):
+        asyncio.run(t.open_agent({"tool": "pi", "id": "session-1", "dir": str(project)}))
+    assert not t._PI_RESUMES
+
+
+def test_expired_pi_reservation_does_not_let_old_request_release_new_one(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(t, "_PI_RESUMES", {})
+    first = t._reserve_pi_resume(str(project))
+    key, _ = first
+    t._PI_RESUMES[key] = (first[1], 0)
+    second = t._reserve_pi_resume(str(project))
+    assert second is not None
+    t._release_pi_resume(first)
+    assert t._PI_RESUMES[key][0] is second[1]
+
+
+def test_pi_resume_guard_checks_only_pi_in_same_project(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    other = tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+    ps = ("300 ?? S pi\n"
+          "301 ?? S bun /opt/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js\n"
+          "302 ?? S python /tmp/pi_helper.py\n")
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        if cmd[0] == "ps":
+            return 0, ps
+        return 0, f"p300\nn{other}\n"
+
+    monkeypatch.setattr(t, "run", fake_run)
+    assert asyncio.run(t._pi_resume_guard(str(project))) == ""
+
+
+def test_pi_resume_guard_stops_if_process_check_fails(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        return (0, "300 ?? S pi\n") if cmd[0] == "ps" else (1, "")
+
+    monkeypatch.setattr(t, "run", fake_run)
+    monkeypatch.setattr(t.os, "kill", lambda pid, sig: None)
+    assert asyncio.run(t._pi_resume_guard(str(project))) == "could not check running pi processes"
+
+
+def test_pi_resume_guard_ignores_process_that_exited(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        return (0, "300 ?? S pi\n") if cmd[0] == "ps" else (1, "")
+
+    def exited(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(t, "run", fake_run)
+    monkeypatch.setattr(t.os, "kill", exited)
+    assert asyncio.run(t._pi_resume_guard(str(project))) == ""
 
 
 # ─────────────── settings ───────────────
@@ -293,6 +707,15 @@ def test_settings_round_trip_keeps_stored_passwords(t):
     assert saved["proxies"] == PROXIES
     assert saved["keenetic"]["password"] == "routerpw"
     assert os.stat(t.CONFIG_FILE).st_mode & 0o777 == 0o600
+
+
+def test_settings_save_keeps_pi_and_omp_launch_options(t):
+    agents = {"pi": {"prefix": "PI_DEBUG=1", "flags": "--model fast", "proxy": "direct"},
+              "omp": {"prefix": "OMP_DEBUG=1", "flags": "--model quick", "proxy": ""}}
+    assert _save(t, {"agents": agents}) == "ok"
+    saved = t.load_config()["agents"]
+    for tool in ("pi", "omp"):
+        assert saved[tool] == agents[tool]
 
 
 def test_settings_rename_proxy_keeps_its_password(t):

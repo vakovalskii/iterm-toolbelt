@@ -24,11 +24,13 @@ let C=null, V=null;
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const maskUrl=s=>String(s||"").replace(/(:\/\/[^:\/\s@]+):([^@\s]+)@/g,"$1:***@");
 const TABS={git:"Git & PR",agent:"Agent actions",sessions:"Sessions",settings:"Settings"};
+const EXTRA_AGENTS=[["pi","pi","pi --session <id>"],["omp","omp","omp -r <id>"]];
 const via=a=>a.proxy==="direct"?"env -u HTTPS_PROXY …":a.proxy?`HTTPS_PROXY=<${a.proxy}>`:a.prefix;
 function preview(){const a=C.agents.claude, x=C.agents.codex;
   const cl=[via(a),"claude --resume <id>",(a.flags||"").replace("--dangerously-skip-permissions","").trim(),a.skip_permissions?"--dangerously-skip-permissions":""].filter(Boolean).join(" ");
   const cx=[via(x),"codex resume <id>",x.flags].filter(Boolean).join(" ");
-  document.getElementById("pv").textContent=maskUrl("cd <dir> && "+cl+"\ncd <dir> && "+cx)}
+  const other=EXTRA_AGENTS.map(([key,,cmd])=>[via(C.agents[key]),cmd,C.agents[key].flags].filter(Boolean).join(" "));
+  document.getElementById("pv").textContent=maskUrl("cd <dir> && "+[cl,cx,...other].join("\ncd <dir> && "))}
 function pick(id,cur){const names=["direct",...(C.proxies||[]).map(p=>p.name)];
   return `<select id="${id}"><option value="">— use the prefix above —</option>${names.map(n=>`<option ${n===cur?"selected":""}>${e(n)}</option>`).join("")}</select>`}
 const pxRow=p=>`<div class="row px" data-orig="${e(p.name||"")}" style="margin-top:4px"><input type="text" class="pn" placeholder="name" value="${e(p.name||"")}" style="width:110px"><input type="text" class="pu" placeholder="http://user:pass@host:port" value="${e(p.url||"")}"><span class="chip del" title="remove">✕</span></div>`;
@@ -40,7 +42,7 @@ function render(d){C=d.config;
    <div class="step"><span class="num">1</span><span><b>Tabs</b>: View → Toolbelt, tick the ones starting with "${e(C.title_prefix)}". This page opens from ⚙ in the Sessions tab. Show/hide the Toolbelt with ⌘⇧B.</span></div>
    <div class="step"><span class="num">2</span><span><b>Git &amp; PR</b>: branch, distance from main, changed files with a diff on click, PR and CI via <code>gh</code>.</span></div>
    <div class="step"><span class="num">3</span><span><b>Agent actions</b>: what Claude Code does in the active pane: commands, edits with diffs, reads, searches. Passwords and tokens in commands are masked.</span></div>
-   <div class="step"><span class="num">4</span><span><b>Sessions</b>: Claude Code and Codex, projects as tiles, "Resume" opens a session in a new window, "Running" jumps to the window with the agent, snapshots save and restore windows.</span></div>
+   <div class="step"><span class="num">4</span><span><b>Sessions</b>: Claude Code, Codex, pi and omp, projects as tiles, "Resume" opens a session in a new window, "Running" jumps to the window with a detected agent, snapshots save and restore windows.</span></div>
    <div class="step"><span class="num">5</span><span>If your agents need a proxy or extra flags, fill in the "Agents" block below.</span></div>
    ${C.onboarded?'<div class="ok">intro done</div>':'<button id="done">Got it</button>'}</div></div>`;
   h+=`<div class="s" id="agents"><h3>Agents: how they are launched</h3>
@@ -54,6 +56,10 @@ function render(d){C=d.config;
     <label class="f">prefix</label><input type="password" id="cx_prefix" value="${e(C.agents.codex.prefix)}">
     <label class="f">flags</label><input type="text" id="cx_flags" value="${e(C.agents.codex.flags)}">
     <label class="f">proxy for new sessions (overrides the prefix)</label>${pick("cx_proxy",C.agents.codex.proxy)}</div>
+   ${EXTRA_AGENTS.map(([key,name])=>`<div class="card"><b>${name}</b>
+    <label class="f">prefix</label><input type="password" id="${key}_prefix" value="${e(C.agents[key].prefix)}">
+    <label class="f">flags</label><input type="text" id="${key}_flags" value="${e(C.agents[key].flags)}">
+    <label class="f">proxy for new sessions (overrides the prefix)</label>${pick(`${key}_proxy`,C.agents[key].proxy)}</div>`).join("")}
    <div class="mut">the command will look like this (password hidden):</div><pre id="pv"></pre></div>`;
   h+=`<div class="s"><h3>Where to open sessions</h3><div class="row"><span class="chip ${C.open_in==="window"?"on":""}" data-w="window">new window</span><span class="chip ${C.open_in==="tab"?"on":""}" data-w="tab">tab in the current window</span></div></div>`;
   h+=`<div class="s"><h3>Toolbelt tabs</h3>${Object.keys(TABS).map(k=>`<label class="row"><input type="checkbox" data-t="${k}" ${C.tabs[k]?"checked":""} > ${e(TABS[k])}</label>`).join("")}
@@ -74,14 +80,14 @@ function render(d){C=d.config;
   h+=`<div class="s mut">version ${e(d.version)} · config ${e(d.config_file)}</div>`;
   document.getElementById("app").outerHTML=`<div id="app">${h}</div>`;
   const $=id=>document.getElementById(id);
-  $("show").onclick=()=>{const t=$("cl_prefix").type==="password"?"text":"password";$("cl_prefix").type=t;$("cx_prefix").type=t;$("show").textContent=t==="text"?"hide":"show"};
-  ["cl_prefix","cl_flags","cx_prefix","cx_flags"].forEach(id=>$(id).oninput=()=>{collect();preview()});
+  $("show").onclick=()=>{const t=$("cl_prefix").type==="password"?"text":"password";["cl_prefix","cx_prefix",...EXTRA_AGENTS.map(([key])=>`${key}_prefix`)].forEach(id=>$(id).type=t);$("show").textContent=t==="text"?"hide":"show"};
+  ["cl_prefix","cl_flags","cx_prefix","cx_flags",...EXTRA_AGENTS.flatMap(([key])=>[`${key}_prefix`,`${key}_flags`])].forEach(id=>$(id).oninput=()=>{collect();preview()});
   $("cl_skip").onchange=()=>{collect();preview()};
   document.querySelectorAll("[data-w]").forEach(n=>n.onclick=()=>{C.open_in=n.dataset.w;document.querySelectorAll("[data-w]").forEach(m=>m.classList.toggle("on",m===n))});
   $("addpx").onclick=()=>$("pxs").insertAdjacentHTML("beforeend",pxRow({}));
   $("addsv").onclick=()=>$("svs").insertAdjacentHTML("beforeend",svRow({}));
   document.getElementById("network").addEventListener("click",ev=>{if(ev.target.classList.contains("del"))ev.target.closest(".row").remove()});
-  ["cl_proxy","cx_proxy"].forEach(id=>$(id).onchange=()=>{collect();preview()});
+  ["cl_proxy","cx_proxy",...EXTRA_AGENTS.map(([key])=>`${key}_proxy`)].forEach(id=>$(id).onchange=()=>{collect();preview()});
   if($("done"))$("done").onclick=async()=>{C.onboarded=true;await save(true);document.getElementById("agents").scrollIntoView({behavior:"smooth"})};
   preview();
   if(location.hash)setTimeout(()=>document.querySelector(location.hash)?.scrollIntoView({behavior:"smooth"}),50);
@@ -89,7 +95,8 @@ function render(d){C=d.config;
 function collect(){const $=id=>document.getElementById(id);
   C.agents.claude.prefix=$("cl_prefix").value.trim();C.agents.claude.flags=$("cl_flags").value.trim();C.agents.claude.skip_permissions=$("cl_skip").checked;
   C.agents.codex.prefix=$("cx_prefix").value.trim();C.agents.codex.flags=$("cx_flags").value.trim();
-  C.agents.claude.proxy=$("cl_proxy").value;C.agents.codex.proxy=$("cx_proxy").value;}
+  C.agents.claude.proxy=$("cl_proxy").value;C.agents.codex.proxy=$("cx_proxy").value;
+  EXTRA_AGENTS.forEach(([key])=>{C.agents[key].prefix=$(`${key}_prefix`).value.trim();C.agents[key].flags=$(`${key}_flags`).value.trim();C.agents[key].proxy=$(`${key}_proxy`).value})}
 async function save(quiet){const $=id=>document.getElementById(id);const msg=$("msg");
   collect();
   document.querySelectorAll("[data-t]").forEach(n=>C.tabs[n.dataset.t]=n.checked);
