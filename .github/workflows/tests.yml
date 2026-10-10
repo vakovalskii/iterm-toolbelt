@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: python -m py_compile toolbelt.py
+      - run: python -m py_compile agentbelt.py
       - run: pip install pytest
       # iterm2 is stubbed in tests/conftest.py: the logic is tested without a running iTerm
       - run: python -m pytest -q tests

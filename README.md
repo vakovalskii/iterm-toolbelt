@@ -1,6 +1,8 @@
-# iterm-toolbelt
+# agentbelt
 
-Tabs for the iTerm2 **Toolbelt** sidebar, built for working with AI coding agents (Claude Code, Codex). Everything follows the active terminal pane: switch to another iTerm tab and the sidebar shows that one.
+An iTerm2 sidebar for AI coding agents (Claude Code, Codex): sessions, a live feed of what the agent does, git and PR state, and proxy health for regions where AI APIs are restricted or blocked. It lives in the iTerm2 **Toolbelt** and follows the active terminal pane: switch to another iTerm tab and the sidebar shows that one.
+
+*Formerly `iterm-toolbelt`: old links redirect, `install.sh` moves an existing install over.*
 
 ![The Toolbelt next to the terminal: agent actions, window snapshots, git](docs/overview.jpg)
 
@@ -16,8 +18,8 @@ Tabs for the iTerm2 **Toolbelt** sidebar, built for working with AI coding agent
 ## Install
 
 ```bash
-git clone https://github.com/vakovalskii/iterm-toolbelt ~/iterm-toolbelt
-~/iterm-toolbelt/install.sh
+git clone https://github.com/vakovalskii/agentbelt ~/agentbelt
+~/agentbelt/install.sh
 ```
 
 Then in iTerm2:
@@ -28,7 +30,7 @@ Then in iTerm2:
 
 Requires macOS, iTerm2 3.3+ (tested on 3.7) and python3. PR and CI info needs a logged-in [`gh`](https://cli.github.com/).
 
-`install.sh` creates a venv in `~/.config/iterm-toolbelt/venv`, the config `~/.config/iterm-toolbelt/config.json` and the LaunchAgent `dev.iterm-toolbelt`. The service starts at login and restarts if it crashes. Update: `git pull && ./install.sh`. Uninstall: `./uninstall.sh`.
+`install.sh` creates a venv in `~/.config/agentbelt/venv`, the config `~/.config/agentbelt/config.json` and the LaunchAgent `dev.agentbelt`. An install under the old name is picked up: the config is copied from `~/.config/iterm-toolbelt`, the old `dev.iterm-toolbelt` service is stopped. The service starts at login and restarts if it crashes. Update: `git pull && ./install.sh`. Uninstall: `./uninstall.sh`.
 
 ## Proxies for Claude Code and Codex
 
@@ -68,7 +70,7 @@ They run in GitHub Actions on every push (`.github/workflows/tests.yml`); locall
 
 ## Config
 
-`~/.config/iterm-toolbelt/config.json` (mode 600, it may hold a proxy with a password). Everything is editable on the ⚙ page in Sessions (proxies, servers and the router in the **Network** section), or by hand, see `config.example.json`. The config is yours alone and never goes into the repo.
+`~/.config/agentbelt/config.json` (mode 600, it may hold a proxy with a password). Everything is editable on the ⚙ page in Sessions (proxies, servers and the router in the **Network** section), or by hand, see `config.example.json`. The config is yours alone and never goes into the repo.
 
 ```json
 {

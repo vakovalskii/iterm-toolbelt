@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Installs iterm-toolbelt: a venv with the iterm2 module, a LaunchAgent (autostart at login)
+# Installs agentbelt: a venv with the iterm2 module, a LaunchAgent (autostart at login)
 # and a default config. Safe to re-run: updates the venv and restarts the service.
+# Moves an install from the old name (iterm-toolbelt): copies its config, retires its LaunchAgent.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOME_DIR="${ITERM_TOOLBELT_HOME:-$HOME/.config/iterm-toolbelt}"
+HOME_DIR="${AGENTBELT_HOME:-$HOME/.config/agentbelt}"
+OLD_DIR="$HOME/.config/iterm-toolbelt"
+OLD_LABEL="dev.agentbelt"
 VENV="$HOME_DIR/venv"
-LABEL="dev.iterm-toolbelt"
+LABEL="dev.agentbelt"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG="$HOME_DIR/toolbelt.log"
+LOG="$HOME_DIR/agentbelt.log"
 
 [ "$(uname)" = "Darwin" ] || { echo "macOS required"; exit 1; }
 [ -d "/Applications/iTerm.app" ] || echo "! iTerm2 not found in /Applications, continuing"
@@ -16,6 +19,19 @@ PY="$(command -v python3 || true)"
 [ -n "$PY" ] || { echo "python3 required (brew install python)"; exit 1; }
 
 mkdir -p "$HOME_DIR" "$HOME/Library/LaunchAgents"
+
+# coming from iterm-toolbelt: keep the config and the session scan cache, stop the old service
+if [ -f "$OLD_DIR/config.json" ] && [ ! -f "$HOME_DIR/config.json" ]; then
+  cp -p "$OLD_DIR/config.json" "$HOME_DIR/config.json"
+  [ -f "$OLD_DIR/scan-cache.json" ] && cp -p "$OLD_DIR/scan-cache.json" "$HOME_DIR/"
+  echo "· config copied from $OLD_DIR (the old directory is left as is)"
+fi
+OLD_PLIST="$HOME/Library/LaunchAgents/$OLD_LABEL.plist"
+if [ -f "$OLD_PLIST" ]; then
+  launchctl bootout "gui/$(id -u)/$OLD_LABEL" 2>/dev/null || true
+  mv "$OLD_PLIST" "$OLD_PLIST.removed"
+  echo "· old service $OLD_LABEL stopped"
+fi
 if [ ! -x "$VENV/bin/python" ]; then
   echo "· venv: $VENV"
   "$PY" -m venv "$VENV"
@@ -33,10 +49,10 @@ cat > "$PLIST.tmp" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key><array><string>$VENV/bin/python</string><string>$REPO/toolbelt.py</string></array>
+  <key>ProgramArguments</key><array><string>$VENV/bin/python</string><string>$REPO/agentbelt.py</string></array>
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin</string>
-    <key>ITERM_TOOLBELT_HOME</key><string>$HOME_DIR</string>
+    <key>AGENTBELT_HOME</key><string>$HOME_DIR</string>
     <key>SHELL</key><string>${SHELL:-/bin/zsh}</string>
   </dict>
   <key>RunAtLoad</key><true/>

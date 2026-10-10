@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""iterm-toolbelt: iTerm2 Toolbelt tabs for working with AI coding agents.
+"""agentbelt: an iTerm2 sidebar for AI coding agents (Claude Code, Codex).
 
 Tabs (View → Toolbelt):
   ◆ Git & PR         branch, ahead/behind, changed files with diffs, PR and CI, worktrees
@@ -9,7 +9,7 @@ Tabs (View → Toolbelt):
 
 Pages are served by an HTTP server on 127.0.0.1 (port from the config) and shown by iTerm2
 in Toolbelt tabs. Everything iTerm-related (active pane, new windows) goes through its Python API.
-Config: ~/.config/iterm-toolbelt/config.json.
+Config: ~/.config/agentbelt/config.json.
 """
 import asyncio
 import copy
@@ -25,7 +25,7 @@ import urllib.parse
 import iterm2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.expanduser(os.getenv("ITERM_TOOLBELT_HOME", "~/.config/iterm-toolbelt"))
+CONFIG_DIR = os.path.expanduser(os.getenv("AGENTBELT_HOME") or os.getenv("ITERM_TOOLBELT_HOME") or "~/.config/agentbelt")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 CODEX_DIR = os.path.expanduser("~/.codex")
@@ -1435,6 +1435,7 @@ async def main(connection):
     for key, title, path in TABS:
         if CFG["tabs"].get(key, True):
             await iterm2.tool.async_register_web_view_tool(
+                # identifiers keep the pre-rename prefix: iTerm remembers ticked tabs by them
                 connection, pre + title, f"dev.iterm-toolbelt.{key}", False, f"http://127.0.0.1:{port}{path}")
     w = app.current_terminal_window
     if w and w.current_tab and w.current_tab.current_session:

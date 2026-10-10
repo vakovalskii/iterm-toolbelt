@@ -105,7 +105,7 @@ Also:
 
 ## 4. What the toolbelt does with your proxy
 
-- The proxy list lives only in `~/.config/iterm-toolbelt/config.json`, mode 600, never in the repo.
+- The proxy list lives only in `~/.config/agentbelt/config.json`, mode 600, never in the repo.
 - Probes pass the proxy URL to `curl` through stdin, never through argv.
 - Pages never get passwords: the settings page shows masked URLs and keeps the stored one when you save
   an untouched row, ⧉ export puts the line on the clipboard from the service side.
