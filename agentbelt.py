@@ -583,6 +583,49 @@ def _tail_title(path: str) -> str:
     return ""
 
 
+def _last_pi_name(path: str) -> str | None:
+    """Find the last pi session name, including an explicit empty name."""
+    def name_from_line(line: bytes) -> str | None:
+        if b'"session_info"' not in line:
+            return None
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(entry, dict) or entry.get("type") != "session_info":
+            return None
+        name = entry.get("name")
+        return name.strip() if isinstance(name, str) else ""
+
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            pos = f.tell()
+            fragments = []
+            while pos:
+                start = max(0, pos - 65536)
+                f.seek(start)
+                parts = f.read(pos - start).split(b"\n")
+                pos = start
+                fragments.append(parts[-1])
+                if len(parts) == 1:
+                    continue
+                line = b"".join(reversed(fragments))
+                name = name_from_line(line)
+                if name is not None:
+                    return name
+                for line in reversed(parts[1:-1]):
+                    name = name_from_line(line)
+                    if name is not None:
+                        return name
+                fragments = [parts[0]]
+            if fragments:
+                return name_from_line(b"".join(reversed(fragments)))
+    except OSError:
+        pass
+    return None
+
+
 def _scan_claude(path: str) -> dict | None:
     sid = os.path.basename(path)[:-6]
     cwd, first = "", ""
@@ -620,15 +663,13 @@ def _scan_codex(path: str) -> dict | None:
 
 def _scan_pi_like(path: str, tool: str) -> dict | None:
     """Pi and omp share a session header and message format; omp may put a title before it."""
-    sid, cwd, title, first, name = "", "", "", "", ""
-    for d in _read_head(path, need=(b'"cwd"', b'"title"', b'"role"', b'"session_info"')):
+    sid, cwd, title, first = "", "", "", ""
+    for d in _read_head(path, need=(b'"cwd"', b'"title"', b'"role"')):
         if d.get("type") == "title" and tool == "omp":
             title = d.get("title") or title
         elif d.get("type") == "session":
             sid, cwd = d.get("id", ""), d.get("cwd", "")
             title = title or d.get("title") or ""
-        elif d.get("type") == "session_info" and tool == "pi":
-            name = d.get("name") or name
         elif d.get("type") == "message" and not first:
             msg = d.get("message") or {}
             if isinstance(msg, dict) and msg.get("role") == "user":
@@ -637,8 +678,9 @@ def _scan_pi_like(path: str, tool: str) -> dict | None:
             break
     if not isinstance(sid, str) or not sid or not isinstance(cwd, str) or not cwd:
         return None
+    name = _last_pi_name(path) if tool == "pi" else None
     return {"id": sid, "tool": tool, "dir": cwd,
-            "title": _clean_title((_tail_title(path) if tool == "pi" else "") or name or title or first)}
+            "title": _clean_title((name if name is not None else title) or first)}
 
 
 def _scan_all() -> list:
@@ -688,9 +730,69 @@ def _scan_all() -> list:
     return rows
 
 
+def _is_pi_command(cmd: str) -> bool:
+    """Recognize Pi itself, including Node/Bun launches before Pi sets its process title."""
+    args = cmd.split()
+    if not args:
+        return False
+    exe = os.path.basename(args[0])
+    if exe in ("pi", "pi-rpc"):
+        return True
+    return exe in ("node", "bun") and any(
+        re.search(r"/@earendil-works/pi-coding-agent/dist/(?:bundle/)?cli\.js$", arg)
+        or arg.endswith("/bin/pi") for arg in args[1:])
+
+
+async def _pi_processes(ps: str) -> list | None:
+    """Find Pi processes and their working directories; None means the check failed."""
+    out = []
+    for line in ps.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, tty, stat, cmd = parts
+        if not pid.isdecimal() or stat.startswith("Z") or not _is_pi_command(cmd):
+            continue
+        rc, cw = await run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], timeout=3)
+        d = next((l[1:] for l in cw.splitlines() if l.startswith("n")), "")
+        if rc or not d:
+            try:
+                os.kill(int(pid), 0)
+            except ProcessLookupError:
+                continue  # the process exited between ps and lsof
+            except OSError:
+                pass
+            return None
+        out.append({"tool": "pi", "pid": int(pid), "id": "", "dir": d,
+                    "name": "", "status": "", "since": 0, "tty": tty, "stopped": stat.startswith("T")})
+    return out
+
+
+async def _pi_resume_guard(d: str) -> str:
+    """Pi does not expose its current session ID, so guard the whole project."""
+    if not d:
+        return "choose a project before resuming pi"
+    rc, ps = await run(["ps", "-xo", "pid=,tty=,stat=,command="], timeout=5)
+    if rc:
+        return "could not check running pi processes"
+    agents = await _pi_processes(ps)
+    if agents is None:
+        return "could not check running pi processes"
+    if any(_same_dir(a["dir"], d) for a in agents):
+        return "pi is already running in this project; close it before resuming"
+    return ""
+
+
+def _same_dir(left: str, right: str) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return os.path.realpath(left) == os.path.realpath(right)
+
+
 async def _active_agents() -> list:
-    """Running claude (via ~/.claude/sessions/<pid>.json) and codex (via processes)."""
-    _, ps = await run(["ps", "-axo", "pid=,tty=,stat=,command="], timeout=5)
+    """Running Claude (session metadata), Codex and Pi (processes)."""
+    _, ps = await run(["ps", "-xo", "pid=,tty=,stat=,command="], timeout=5)
     ttys, stopped = {}, set()
     for line in ps.splitlines():
         parts = line.split(None, 3)
@@ -728,6 +830,7 @@ async def _active_agents() -> list:
             _, cw = await run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], timeout=3)
             d = next((l[1:] for l in cw.splitlines() if l.startswith("n")), "")
             out.append({"tool": "codex", "pid": int(pid), "id": "", "dir": d, "name": "", "status": "", "since": 0})
+    out.extend(a for a in (await _pi_processes(ps) or []) if not a["stopped"])
     for a in out:
         a["tty"] = ttys.get(str(a["pid"]), "")
     return out
@@ -812,6 +915,10 @@ async def open_agent(q: dict) -> str:
     conn = CONN.get("c")
     if conn is None:
         return "no connection to iTerm"
+    if tool == "pi" and sid:
+        reason = await _pi_resume_guard(d)
+        if reason:
+            return reason
     app = await iterm2.async_get_app(conn)
     cur = app.current_terminal_window
     if q.get("where") == "tab" and cur is not None:

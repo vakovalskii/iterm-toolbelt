@@ -221,6 +221,28 @@ def test_scan_pi_keeps_early_name_after_long_session(t):
     assert t._scan_pi_like(p, "pi")["title"] == "Chosen name"
 
 
+def test_scan_pi_uses_last_name_between_head_and_tail(t):
+    p = _pi_like_session(t, "pi", "named-9012", [
+        {"type": "session", "id": "named-9012", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": "Original prompt"}},
+        {"type": "session_info", "name": "Old name"},
+        {"type": "usage", "details": "x" * 600_000},
+        {"type": "session_info", "name": "Latest name"},
+        {"type": "usage", "details": "x" * 70_000}])
+    assert t._scan_pi_like(p, "pi")["title"] == "Latest name"
+
+
+def test_scan_pi_cleared_name_falls_back_to_first_message(t):
+    p = _pi_like_session(t, "pi", "named-3456", [
+        {"type": "session", "id": "named-3456", "cwd": "/w/repo"},
+        {"type": "message", "message": {"role": "user", "content": "Original prompt"}},
+        {"type": "session_info", "name": "Old name"},
+        {"type": "usage", "details": "x" * 70_000},
+        {"type": "session_info", "name": "  "},
+        {"type": "usage", "details": "x" * 70_000}])
+    assert t._scan_pi_like(p, "pi")["title"] == "Original prompt"
+
+
 def test_scan_omp_uses_legacy_header_title(t):
     p = _pi_like_session(t, "omp", "legacy-1234", [
         {"type": "session", "id": "legacy-1234", "cwd": "/w/repo", "title": "Older title"}])
@@ -293,6 +315,20 @@ def test_active_agents_hide_suspended_and_duplicate_processes(t, monkeypatch):
     assert [(a["pid"], a["dir"], a["tty"]) for a in codex] == [(200, "/w/codexdir", "ttys006")]
 
 
+def test_active_agents_includes_pi_without_a_terminal_but_not_suspended(t, monkeypatch):
+    ps = "300 ?? S pi\n301 ttys001 T pi\n302 ?? S node /opt/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        if cmd[0] == "ps":
+            return 0, ps
+        return 0, f"p{cmd[3]}\nn/w/project\n"
+
+    monkeypatch.setattr(t, "run", fake_run)
+    out = asyncio.run(t._active_agents())
+    assert [(a["pid"], a["tty"], a["dir"]) for a in out if a["tool"] == "pi"] == [
+        (300, "??", "/w/project"), (302, "??", "/w/project")]
+
+
 # ─────────────── launching agents ───────────────
 
 
@@ -351,6 +387,69 @@ def test_open_agent_rejects_bad_input_before_touching_iterm(t, tmp_path):
     assert asyncio.run(t.open_agent({"tool": "claude", "dir": str(tmp_path / "nope")})).startswith("no such directory")
     t.CONN.clear()
     assert asyncio.run(t.open_agent({"tool": "claude"})) == "no connection to iTerm"
+
+
+@pytest.mark.parametrize("stat,tty", [("S", "??"), ("T", "ttys001")])
+def test_open_agent_blocks_pi_resume_in_project_with_pi_process(t, monkeypatch, tmp_path, stat, tty):
+    project = tmp_path / "project"
+    project.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    monkeypatch.setitem(t.CONN, "c", object())
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        if cmd[0] == "ps":
+            return 0, f"300 {tty} {stat} pi\n"
+        return 0, f"p300\nn{project}\n"
+
+    monkeypatch.setattr(t, "run", fake_run)
+    assert asyncio.run(t.open_agent({"tool": "pi", "id": "session-1", "dir": str(alias)})) == (
+        "pi is already running in this project; close it before resuming")
+
+
+def test_pi_resume_guard_checks_only_pi_in_same_project(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    other = tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+    ps = ("300 ?? S pi\n"
+          "301 ?? S bun /opt/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js\n"
+          "302 ?? S python /tmp/pi_helper.py\n")
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        if cmd[0] == "ps":
+            return 0, ps
+        return 0, f"p300\nn{other}\n"
+
+    monkeypatch.setattr(t, "run", fake_run)
+    assert asyncio.run(t._pi_resume_guard(str(project))) == ""
+
+
+def test_pi_resume_guard_stops_if_process_check_fails(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        return (0, "300 ?? S pi\n") if cmd[0] == "ps" else (1, "")
+
+    monkeypatch.setattr(t, "run", fake_run)
+    monkeypatch.setattr(t.os, "kill", lambda pid, sig: None)
+    assert asyncio.run(t._pi_resume_guard(str(project))) == "could not check running pi processes"
+
+
+def test_pi_resume_guard_ignores_process_that_exited(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+
+    async def fake_run(cmd, cwd=None, timeout=10.0):
+        return (0, "300 ?? S pi\n") if cmd[0] == "ps" else (1, "")
+
+    def exited(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(t, "run", fake_run)
+    monkeypatch.setattr(t.os, "kill", exited)
+    assert asyncio.run(t._pi_resume_guard(str(project))) == ""
 
 
 # ─────────────── settings ───────────────
