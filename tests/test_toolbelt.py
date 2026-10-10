@@ -244,6 +244,78 @@ def test_scan_pi_cleared_name_falls_back_to_first_message(t):
     assert t._scan_pi_like(p, "pi")["title"] == "Original prompt"
 
 
+def test_pi_name_scan_reads_only_appended_bytes(t, monkeypatch):
+    rows = [{"type": "session", "id": "growing-1234", "cwd": "/w/repo"}]
+    rows += [{"type": "usage", "details": "x" * 200_000} for _ in range(8)]
+    p = _pi_like_session(t, "pi", "growing-1234", rows)
+    real_open = open
+    read_bytes = 0
+
+    class CountingFile:
+        def __init__(self, file):
+            self.file = file
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.file.__exit__(*args)
+
+        def __getattr__(self, attr):
+            return getattr(self.file, attr)
+
+        def read(self, *args):
+            nonlocal read_bytes
+            data = self.file.read(*args)
+            read_bytes += len(data)
+            return data
+
+    def counting_open(path, mode="r", *args, **kwargs):
+        file = real_open(path, mode, *args, **kwargs)
+        return CountingFile(file) if path == p and mode == "rb" else file
+
+    monkeypatch.setattr(t, "open", counting_open, raising=False)
+    assert t._last_pi_name(p) is None
+    assert read_bytes > 1_000_000
+    read_bytes = 0
+    _jl(p, [{"type": "message", "message": {"role": "assistant", "content": "done"}}], "a")
+    assert t._last_pi_name(p) is None
+    assert read_bytes < 1000
+
+
+def test_pi_name_scan_handles_partial_line_replacement_and_truncation(t):
+    p = _pi_like_session(t, "pi", "changing-1234", [
+        {"type": "session", "id": "changing-1234", "cwd": "/w/repo"},
+        {"type": "session_info", "name": "Old name"}])
+    assert t._last_pi_name(p) == "Old name"
+
+    with open(p, "ab") as f:
+        f.write(b'{"type":"session_info","name":"New')
+    assert t._last_pi_name(p) == "Old name"
+    with open(p, "ab") as f:
+        f.write(b' name"}\n')
+    assert t._last_pi_name(p) == "New name"
+    _jl(p, [{"type": "session_info", "name": "  "}], "a")
+    assert t._last_pi_name(p) == ""
+
+    replacement = p + ".new"
+    _jl(replacement, [{"type": "session_info", "name": "Replacement"}], "w")
+    os.replace(replacement, p)
+    assert t._last_pi_name(p) == "Replacement"
+
+    with open(p, "wb"):
+        pass
+    assert t._last_pi_name(p) is None
+    _jl(p, [{"type": "session_info", "name": "After truncate"}], "w")
+    assert t._last_pi_name(p) == "After truncate"
+
+    old = os.stat(p)
+    _jl(p, [{"type": "session_info", "name": "Another title!"}], "w")
+    assert os.path.getsize(p) == old.st_size
+    os.utime(p, ns=(old.st_atime_ns, old.st_mtime_ns + 1_000_000))
+    assert t._last_pi_name(p) == "Another title!"
+
+
 def test_scan_omp_uses_legacy_header_title(t):
     p = _pi_like_session(t, "omp", "legacy-1234", [
         {"type": "session", "id": "legacy-1234", "cwd": "/w/repo", "title": "Older title"}])
@@ -425,6 +497,128 @@ def test_open_agent_blocks_pi_resume_in_project_with_pi_process(t, monkeypatch, 
     monkeypatch.setattr(t, "run", fake_run)
     assert asyncio.run(t.open_agent({"tool": "pi", "id": "session-1", "dir": str(alias)})) == (
         "pi is already running in this project; close it before resuming")
+
+
+def test_open_agent_reserves_pi_project_during_process_check(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    monkeypatch.setitem(t.CONN, "c", object())
+    monkeypatch.setattr(t, "_PI_RESUMES", {})
+    calls = 0
+
+    async def scenario():
+        nonlocal calls
+        entered, proceed = asyncio.Event(), asyncio.Event()
+
+        async def guard(_):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                entered.set()
+                await proceed.wait()
+            return "could not check running pi processes"
+
+        monkeypatch.setattr(t, "_pi_resume_guard", guard)
+        first = asyncio.create_task(t.open_agent({"tool": "pi", "id": "session-1", "dir": str(project)}))
+        await entered.wait()
+        assert await t.open_agent({"tool": "pi", "id": "session-1", "dir": str(alias)}) == (
+            "pi is already starting in this project")
+        assert calls == 1
+        proceed.set()
+        assert await first == "could not check running pi processes"
+        assert await t.open_agent({"tool": "pi", "id": "session-1", "dir": str(alias)}) == (
+            "could not check running pi processes")
+        assert calls == 2  # an error before launch releases the reservation
+
+    asyncio.run(scenario())
+
+
+def test_open_agent_keeps_pi_reservation_after_send(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setitem(t.CONN, "c", object())
+    monkeypatch.setattr(t, "_PI_RESUMES", {})
+    commands = []
+
+    class Session:
+        async def async_get_variable(self, name):
+            return os.path.basename(os.environ.get("SHELL", "zsh"))
+
+        async def async_send_text(self, command):
+            commands.append(command)
+
+        async def async_activate(self, **kwargs):
+            pass
+
+    session = Session()
+    tab = type("Tab", (), {"tab_id": "tab", "current_session": session})()
+    window = type("Window", (), {"window_id": "window", "current_tab": tab, "tabs": [tab]})()
+
+    class WindowAPI:
+        @staticmethod
+        async def async_create(conn):
+            return window
+
+    class App:
+        current_terminal_window = None
+
+        async def async_refresh(self):
+            pass
+
+        def get_window_by_id(self, window_id):
+            return window
+
+    async def get_app(conn):
+        return App()
+
+    async def guard(_):
+        return ""  # Pi has not yet appeared in ps
+
+    monkeypatch.setattr(t.iterm2, "Window", WindowAPI, raising=False)
+    monkeypatch.setattr(t.iterm2, "async_get_app", get_app, raising=False)
+    monkeypatch.setattr(t, "_pi_resume_guard", guard)
+
+    async def scenario():
+        q = {"tool": "pi", "id": "session-1", "dir": str(project)}
+        assert await t.open_agent(q) == "ok"
+        assert await t.open_agent(q) == "pi is already starting in this project"
+        assert len(commands) == 1
+
+    asyncio.run(scenario())
+
+
+def test_open_agent_releases_pi_reservation_if_iterm_fails(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setitem(t.CONN, "c", object())
+    monkeypatch.setattr(t, "_PI_RESUMES", {})
+
+    async def guard(_):
+        return ""
+
+    async def get_app(conn):
+        raise RuntimeError("iTerm is unavailable")
+
+    monkeypatch.setattr(t, "_pi_resume_guard", guard)
+    monkeypatch.setattr(t.iterm2, "async_get_app", get_app, raising=False)
+    with pytest.raises(RuntimeError, match="iTerm is unavailable"):
+        asyncio.run(t.open_agent({"tool": "pi", "id": "session-1", "dir": str(project)}))
+    assert not t._PI_RESUMES
+
+
+def test_expired_pi_reservation_does_not_let_old_request_release_new_one(t, monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(t, "_PI_RESUMES", {})
+    first = t._reserve_pi_resume(str(project))
+    key, _ = first
+    t._PI_RESUMES[key] = (first[1], 0)
+    second = t._reserve_pi_resume(str(project))
+    assert second is not None
+    t._release_pi_resume(first)
+    assert t._PI_RESUMES[key][0] is second[1]
 
 
 def test_pi_resume_guard_checks_only_pi_in_same_project(t, monkeypatch, tmp_path):

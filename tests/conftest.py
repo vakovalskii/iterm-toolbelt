@@ -39,7 +39,7 @@ def t(tmp_path, monkeypatch):
     tb.save_config(cfg)
     tb.CFG.clear()
     tb.CFG.update(tb.load_config())
-    for d in (tb.CACHE, tb.SCAN, tb.TRANSCRIPTS):
+    for d in (tb.CACHE, tb.SCAN, tb.PI_NAMES, tb.TRANSCRIPTS):
         d.clear()
     tb.STATE.update({"session_id": None, "session_name": "", "cwd": None, "agent": None, "tty": ""})
     return tb

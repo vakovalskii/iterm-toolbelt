@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -103,6 +104,9 @@ CONN: dict = {}
 CACHE: dict[str, tuple[float, object]] = {}
 _RUNNING: set[str] = set()
 _FETCHED: dict[str, float] = {}
+_PI_RESUMES: dict[tuple[int, int], tuple[object, float]] = {}
+_PI_RESUMES_LOCK = threading.Lock()
+_PI_RESUME_TIMEOUT = 30.0
 
 
 async def run(cmd: list[str], cwd: str | None = None, timeout: float = 10.0) -> tuple[int, str]:
@@ -521,6 +525,8 @@ def agent_item(i: int) -> str:
 
 SCAN: dict[str, tuple[float, dict | None]] = {}
 SCAN_FILE = os.path.join(CONFIG_DIR, "scan-cache.json")
+# device, inode, read offset, mtime_ns, last complete name, unfinished line
+PI_NAMES: dict[str, tuple[int, int, int, int, str | None, bytes]] = {}
 SAFE_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,126}[A-Za-z0-9])?$")
 
 
@@ -583,25 +589,62 @@ def _tail_title(path: str) -> str:
     return ""
 
 
-def _last_pi_name(path: str) -> str | None:
-    """Find the last pi session name, including an explicit empty name."""
-    def name_from_line(line: bytes) -> str | None:
-        if b'"session_info"' not in line:
-            return None
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            return None
-        if not isinstance(entry, dict) or entry.get("type") != "session_info":
-            return None
-        name = entry.get("name")
-        return name.strip() if isinstance(name, str) else ""
+def _pi_name_from_line(line: bytes) -> str | None:
+    if b'"session_info"' not in line:
+        return None
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(entry, dict) or entry.get("type") != "session_info":
+        return None
+    name = entry.get("name")
+    return name.strip() if isinstance(name, str) else ""
 
+
+def _last_pi_name(path: str) -> str | None:
+    """Find the latest Pi name; after the first scan, read only appended bytes."""
     try:
         with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            pos = f.tell()
-            fragments = []
+            st = os.fstat(f.fileno())
+            cached = PI_NAMES.get(path)
+            if cached:
+                dev, ino, offset, mtime, name, pending = cached
+                if (dev, ino) == (st.st_dev, st.st_ino) and st.st_size >= offset and (
+                        st.st_size > offset or st.st_mtime_ns == mtime):
+                    f.seek(offset)
+                    appended = f.read()
+                    parts = (pending + appended).split(b"\n")
+                    for line in parts[:-1]:
+                        found = _pi_name_from_line(line)
+                        if found is not None:
+                            name = found
+                    pending = parts[-1]
+                    PI_NAMES[path] = (dev, ino, f.tell(), st.st_mtime_ns, name, pending)
+                    found = _pi_name_from_line(pending)
+                    return found if found is not None else name
+
+            # Pi writes JSONL. Keep the last unterminated line for the next append.
+            pos, fragments = st.st_size, []
+            if pos:
+                f.seek(pos - 1)
+                if f.read(1) != b"\n":
+                    while pos:
+                        start = max(0, pos - 65536)
+                        f.seek(start)
+                        block = f.read(pos - start)
+                        cut = block.rfind(b"\n")
+                        fragments.append(block[cut + 1:])
+                        pos = start
+                        if cut >= 0:
+                            break
+                    pending = b"".join(reversed(fragments))
+                else:
+                    pending = b""
+            else:
+                pending = b""
+
+            name, pos, fragments = None, st.st_size - len(pending), []
             while pos:
                 start = max(0, pos - 65536)
                 f.seek(start)
@@ -610,20 +653,26 @@ def _last_pi_name(path: str) -> str | None:
                 fragments.append(parts[-1])
                 if len(parts) == 1:
                     continue
-                line = b"".join(reversed(fragments))
-                name = name_from_line(line)
+                name = _pi_name_from_line(b"".join(reversed(fragments)))
                 if name is not None:
-                    return name
+                    break
                 for line in reversed(parts[1:-1]):
-                    name = name_from_line(line)
+                    name = _pi_name_from_line(line)
                     if name is not None:
-                        return name
+                        break
+                if name is not None:
+                    break
                 fragments = [parts[0]]
-            if fragments:
-                return name_from_line(b"".join(reversed(fragments)))
+            else:
+                if fragments:
+                    name = _pi_name_from_line(b"".join(reversed(fragments)))
+
+            PI_NAMES[path] = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, name, pending)
+            found = _pi_name_from_line(pending)
+            return found if found is not None else name
     except OSError:
-        pass
-    return None
+        PI_NAMES.pop(path, None)
+        return None
 
 
 def _scan_claude(path: str) -> dict | None:
@@ -717,6 +766,7 @@ def _scan_all() -> list:
     for p in list(SCAN):
         if p not in seen:
             SCAN.pop(p, None)
+            PI_NAMES.pop(p, None)
             changed = True
     if changed:
         try:
@@ -781,6 +831,39 @@ async def _pi_resume_guard(d: str) -> str:
     if any(_same_dir(a["dir"], d) for a in agents):
         return "pi is already running in this project; close it before resuming"
     return ""
+
+
+def _reserve_pi_resume(d: str) -> tuple[tuple[int, int], object] | None:
+    """Reserve one project before the process check; stat also resolves symlinks and case aliases."""
+    st = os.stat(d)
+    key = (st.st_dev, st.st_ino)
+    now = time.monotonic()
+    with _PI_RESUMES_LOCK:
+        for old_key, (_, until) in list(_PI_RESUMES.items()):
+            if until <= now:
+                _PI_RESUMES.pop(old_key)
+        if key in _PI_RESUMES:
+            return None
+        ticket = object()
+        _PI_RESUMES[key] = (ticket, now + 2 * _PI_RESUME_TIMEOUT)
+    return key, ticket
+
+
+def _release_pi_resume(reservation: tuple[tuple[int, int], object]) -> None:
+    key, ticket = reservation
+    with _PI_RESUMES_LOCK:
+        if _PI_RESUMES.get(key, (None, 0))[0] is ticket:
+            _PI_RESUMES.pop(key, None)
+
+
+def _renew_pi_resume(reservation: tuple[tuple[int, int], object]) -> bool:
+    """Keep the reservation briefly after sending while Pi starts."""
+    key, ticket = reservation
+    with _PI_RESUMES_LOCK:
+        if _PI_RESUMES.get(key, (None, 0))[0] is not ticket:
+            return False
+        _PI_RESUMES[key] = (ticket, time.monotonic() + _PI_RESUME_TIMEOUT)
+    return True
 
 
 def _same_dir(left: str, right: str) -> bool:
@@ -917,39 +1000,57 @@ async def open_agent(q: dict) -> str:
     conn = CONN.get("c")
     if conn is None:
         return "no connection to iTerm"
+    reservation = None
     if tool == "pi" and sid:
-        reason = await _pi_resume_guard(d)
-        if reason:
-            return reason
-    app = await iterm2.async_get_app(conn)
-    cur = app.current_terminal_window
-    if q.get("where") == "tab" and cur is not None:
-        tab = await cur.async_create_tab()
-        win_id, tab_id = cur.window_id, tab.tab_id
-    else:
-        w = await iterm2.Window.async_create(conn)
-        win_id, tab_id = w.window_id, w.current_tab.tab_id
-    # a new window does not hand over its session right away, and a helper bash runs first:
-    # re-fetch the session by id and wait for the user's shell, otherwise the text is lost
-    shell = os.path.basename(os.environ.get("SHELL", "zsh"))
-    sess = None
-    for _ in range(50):
-        await asyncio.sleep(0.2)
+        if not d:
+            return "choose a project before resuming pi"
         try:
-            await app.async_refresh()
-            win = app.get_window_by_id(win_id)
-            tab = win and next((t for t in win.tabs if t.tab_id == tab_id), None)
-            sess = tab and tab.current_session
-            if sess and (await sess.async_get_variable("jobName")) in (shell, "-" + shell):
-                break
-        except Exception:  # noqa: BLE001
-            sess = None
-    if not sess:
-        return "iTerm did not return the new session"
-    await asyncio.sleep(0.3)
-    await sess.async_send_text((f"cd {shlex.quote(d)} && " if d else "") + cmd + "\n")
-    await sess.async_activate(select_tab=True, order_window_front=True)
-    return "ok"
+            reservation = _reserve_pi_resume(d)
+        except OSError:
+            return f"no such directory: {d}"
+        if reservation is None:
+            return "pi is already starting in this project"
+    sent = False
+    try:
+        if reservation:
+            reason = await _pi_resume_guard(d)
+            if reason:
+                return reason
+        app = await iterm2.async_get_app(conn)
+        cur = app.current_terminal_window
+        if q.get("where") == "tab" and cur is not None:
+            tab = await cur.async_create_tab()
+            win_id, tab_id = cur.window_id, tab.tab_id
+        else:
+            w = await iterm2.Window.async_create(conn)
+            win_id, tab_id = w.window_id, w.current_tab.tab_id
+        # a new window does not hand over its session right away, and a helper bash runs first:
+        # re-fetch the session by id and wait for the user's shell, otherwise the text is lost
+        shell = os.path.basename(os.environ.get("SHELL", "zsh"))
+        sess = None
+        for _ in range(50):
+            await asyncio.sleep(0.2)
+            try:
+                await app.async_refresh()
+                win = app.get_window_by_id(win_id)
+                tab = win and next((t for t in win.tabs if t.tab_id == tab_id), None)
+                sess = tab and tab.current_session
+                if sess and (await sess.async_get_variable("jobName")) in (shell, "-" + shell):
+                    break
+            except Exception:  # noqa: BLE001
+                sess = None
+        if not sess:
+            return "iTerm did not return the new session"
+        await asyncio.sleep(0.3)
+        if reservation and not _renew_pi_resume(reservation):
+            return "pi resume request expired; retry"
+        sent = True  # sending may succeed even if iTerm reports an error afterward
+        await sess.async_send_text((f"cd {shlex.quote(d)} && " if d else "") + cmd + "\n")
+        await sess.async_activate(select_tab=True, order_window_front=True)
+        return "ok"
+    finally:
+        if reservation and not sent:
+            _release_pi_resume(reservation)
 
 
 async def focus_tty(tty: str) -> str:
