@@ -30,6 +30,14 @@ Requires macOS, iTerm2 3.3+ (tested on 3.7) and python3. PR and CI info needs a 
 
 `install.sh` creates a venv in `~/.config/iterm-toolbelt/venv`, the config `~/.config/iterm-toolbelt/config.json` and the LaunchAgent `dev.iterm-toolbelt`. The service starts at login and restarts if it crashes. Update: `git pull && ./install.sh`. Uninstall: `./uninstall.sh`.
 
+## Proxies for Claude Code and Codex
+
+If AI APIs are blocked or region-restricted where you work, see **[docs/proxies.md](docs/proxies.md)**: a small
+password-protected HTTP proxy on a VPS (gost in Docker, five minutes), pointing Claude Code and Codex at it,
+and how to keep it from becoming an open proxy (secrets file, firewall allowlist, or publishing it only inside
+a WireGuard/AmneziaWG tunnel). The toolbelt then manages the list, probes every proxy against each CLI's API
+and launches agents through the one that works.
+
 ## How it works
 
 - One Python process: a small HTTP server on `127.0.0.1` serves the pages from `pages/`, and iTerm2 shows them as Toolbelt tabs (`iterm2.tool.async_register_web_view_tool`). The same iTerm2 Python API tells us the active pane (`FocusMonitor`), its directory and tty, and opens windows to resume sessions.
