@@ -7,7 +7,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOME_DIR="${AGENTBELT_HOME:-$HOME/.config/agentbelt}"
 OLD_DIR="$HOME/.config/iterm-toolbelt"
-OLD_LABEL="dev.agentbelt"
+OLD_LABEL="dev.iterm-toolbelt"
 VENV="$HOME_DIR/venv"
 LABEL="dev.agentbelt"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
