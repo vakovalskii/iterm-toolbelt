@@ -4,9 +4,16 @@ An iTerm2 sidebar for AI coding agents (Claude Code, Codex): sessions, a live fe
 
 *Formerly `iterm-toolbelt`: old links redirect, `install.sh` moves an existing install over.*
 
-![The Toolbelt next to the terminal: agent actions, window snapshots, git](docs/overview.jpg)
+<p><img src="docs/agent-actions.png" width="49%" alt="Agent actions: proxy health per CLI, tunnels, servers, live feed with diffs"> <img src="docs/sessions-running.png" width="49%" alt="Sessions: running agents, jump to the window"></p>
 
-<p><img src="docs/sessions-start.jpg" width="49%" alt="Sessions: pick an agent"> <img src="docs/sessions-active.jpg" width="49%" alt="Sessions: running agents"></p>
+<p><img src="docs/sessions-agents.png" width="32%" alt="Sessions: pick an agent"> <img src="docs/sessions-project.png" width="32%" alt="Sessions: resume or start in a project"> <img src="docs/sessions-snapshots.png" width="32%" alt="Sessions: window snapshots"></p>
+
+<details><summary>More: projects</summary>
+
+<img src="docs/sessions-projects.png" width="49%" alt="Sessions: projects of an agent">
+</details>
+
+*Screenshots use made-up demo data.*
 
 | tab | what it shows |
 |---|---|
