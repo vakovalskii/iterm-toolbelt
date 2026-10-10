@@ -2,9 +2,11 @@ import asyncio
 import json
 import os
 import re
+import runpy
 import shlex
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -362,6 +364,15 @@ def test_scan_all_finds_and_caches_pi_and_omp(t, monkeypatch):
 
 
 # ─────────────── running agents ───────────────
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="uses the macOS system lsof")
+def test_pi_processes_with_restricted_service_path(t, monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.chdir(tmp_path)
+    service = runpy.run_path(t.__file__)
+    processes = asyncio.run(service["_pi_processes"](f"{os.getpid()} ?? S pi"))
+    assert processes and os.path.samefile(processes[0]["dir"], tmp_path)
 
 
 def test_active_agents_hide_suspended_and_duplicate_processes(t, monkeypatch):

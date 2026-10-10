@@ -94,7 +94,7 @@ CFG = load_config()
 
 NOPROXY_ENV = {k: v for k, v in os.environ.items()
                if k.lower() not in ("https_proxy", "http_proxy", "all_proxy")}
-NOPROXY_ENV["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + NOPROXY_ENV.get("PATH", "")
+NOPROXY_ENV["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:" + NOPROXY_ENV.get("PATH", "")
 NOPROXY_ENV["GH_PROMPT_DISABLED"] = "1"
 NOPROXY_ENV["GIT_TERMINAL_PROMPT"] = "0"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")

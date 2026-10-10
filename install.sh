@@ -56,7 +56,7 @@ cat > "$PLIST.tmp" <<EOF
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array><string>$VENV/bin/python</string><string>$REPO/agentbelt.py</string></array>
   <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:$HOME/.local/bin</string>
     <key>AGENTBELT_HOME</key><string>$HOME_DIR</string>
     <key>SHELL</key><string>${SHELL:-/bin/zsh}</string>
   </dict>
