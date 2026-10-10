@@ -34,6 +34,12 @@ Requires macOS, iTerm2 3.3+ (tested on 3.7) and python3. PR and CI info needs a 
 
 `install.sh` creates a venv in `~/.config/agentbelt/venv`, the config `~/.config/agentbelt/config.json` and the LaunchAgent `dev.agentbelt`. An install under the old name is picked up: the config is copied from `~/.config/iterm-toolbelt`, the old `dev.iterm-toolbelt` service is stopped. The service starts at login and restarts if it crashes. Update: `git pull && ./install.sh`. Uninstall: `./uninstall.sh`.
 
+If the iTerm2 API connection drops (for example, after restarting iTerm2 or waking the Mac),
+the service exits and launchd restarts it with a fresh connection and Toolbelt registrations.
+The local pages are briefly unavailable during recovery; launchd may delay restarting by up to
+10 seconds, and iTerm2 must be available again. A script started manually exits on disconnect;
+use `install.sh` for automatic recovery.
+
 ## Proxies for Claude Code and Codex
 
 If AI APIs are blocked or region-restricted where you work, see **[docs/proxies.md](docs/proxies.md)**: a small
