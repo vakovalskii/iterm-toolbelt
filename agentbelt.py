@@ -1685,9 +1685,8 @@ TABS = [("git", "Git & PR", "/"), ("agent", "Agent actions", "/agent"),
         ("sessions", "Sessions", "/sessions"), ("settings", "Settings", "/settings")]
 
 
-async def main(connection):
+async def iterm_session(connection):
     port = int(CFG.get("port", 47811))
-    server = await asyncio.start_server(handle, "127.0.0.1", port)
     CONN["c"] = connection
     app = await iterm2.async_get_app(connection)
     pre = CFG.get("title_prefix", "")
@@ -1706,28 +1705,53 @@ async def main(connection):
         while True:
             await asyncio.sleep(5)
             await refresh_session(app, STATE["session_id"])
-    asyncio.create_task(poll())
-    asyncio.create_task(autosave_loop(app))
+    tasks = [asyncio.create_task(poll()), asyncio.create_task(autosave_loop(app))]
+    try:
+        async with iterm2.FocusMonitor(connection) as mon:
+            while True:
+                upd = await mon.async_get_next_update()
+                sid = None
+                if upd.active_session_changed:
+                    sid = upd.active_session_changed.session_id
+                elif upd.selected_tab_changed or upd.window_changed:
+                    w = app.current_terminal_window
+                    if w and w.current_tab and w.current_tab.current_session:
+                        sid = w.current_tab.current_session.session_id
+                if sid:
+                    await refresh_session(app, sid)
+                if upd.window_changed or upd.active_session_changed:
+                    await ensure_toolbelt(app, connection)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
-    async with iterm2.FocusMonitor(connection) as mon:
-        while True:
-            upd = await mon.async_get_next_update()
-            sid = None
-            if upd.active_session_changed:
-                sid = upd.active_session_changed.session_id
-            elif upd.selected_tab_changed or upd.window_changed:
-                w = app.current_terminal_window
-                if w and w.current_tab and w.current_tab.current_session:
-                    sid = w.current_tab.current_session.session_id
-            if sid:
-                await refresh_session(app, sid)
-            if upd.window_changed or upd.active_session_changed:
-                await ensure_toolbelt(app, connection)
-    server.close()
+
+async def main(connection):
+    port = int(CFG.get("port", 47811))
+    server = await asyncio.start_server(handle, "127.0.0.1", port)
+    # retry=True only covers connecting. A disconnect does not wake FocusMonitor
+    # or pending RPCs, so watch the socket even while the session is starting.
+    session = asyncio.create_task(iterm_session(connection))
+    closed = asyncio.create_task(connection.websocket.wait_closed())
+    try:
+        done, _ = await asyncio.wait((session, closed), return_when=asyncio.FIRST_COMPLETED)
+        if closed in done:
+            print(time.strftime("%H:%M:%S"), "iTerm connection closed; exiting for launchd to restart", flush=True)
+        else:
+            session.result()
+    finally:
+        CONN.clear()
+        session.cancel()
+        closed.cancel()
+        await asyncio.gather(session, closed, return_exceptions=True)
+        # Do not wait for HTTP clients: their requests may be stuck in an iTerm RPC.
+        # The process exits next; launchd starts it with fresh SDK state and subscriptions.
+        server.close()
 
 
 if __name__ == "__main__":
     if "--version" in sys.argv:
         print(VERSION)
         sys.exit(0)
-    iterm2.run_forever(main, retry=True)
+    iterm2.run_until_complete(main, retry=True)
