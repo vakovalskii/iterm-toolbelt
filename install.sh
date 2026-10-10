@@ -15,8 +15,13 @@ LOG="$HOME_DIR/agentbelt.log"
 
 [ "$(uname)" = "Darwin" ] || { echo "macOS required"; exit 1; }
 [ -d "/Applications/iTerm.app" ] || echo "! iTerm2 not found in /Applications, continuing"
-PY="$(command -v python3 || true)"
-[ -n "$PY" ] || { echo "python3 required (brew install python)"; exit 1; }
+# python 3.10+ (the code uses `X | None`); a bare ssh or launchd PATH often finds only Xcode's 3.9
+PY=""
+for c in python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 python3.14 python3.13 python3.12 python3.11 python3.10; do
+  p="$(command -v "$c" 2>/dev/null || true)"
+  if [ -n "$p" ] && "$p" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then PY="$p"; break; fi
+done
+[ -n "$PY" ] || { echo "python 3.10+ required (brew install python)"; exit 1; }
 
 mkdir -p "$HOME_DIR" "$HOME/Library/LaunchAgents"
 
@@ -32,9 +37,9 @@ if [ -f "$OLD_PLIST" ]; then
   mv "$OLD_PLIST" "$OLD_PLIST.removed"
   echo "· old service $OLD_LABEL stopped"
 fi
-if [ ! -x "$VENV/bin/python" ]; then
-  echo "· venv: $VENV"
-  "$PY" -m venv "$VENV"
+if [ ! -x "$VENV/bin/python" ] || ! "$VENV/bin/python" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
+  echo "· venv: $VENV ($("$PY" --version))"
+  "$PY" -m venv --clear "$VENV"
 fi
 "$VENV/bin/pip" install -q --upgrade pip iterm2
 
