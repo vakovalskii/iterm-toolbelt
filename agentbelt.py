@@ -1349,8 +1349,23 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         elif u.path == "/settings/state":
             out = json.dumps(settings_state(), ensure_ascii=False).encode()
         elif u.path in ("/sessions/open", "/sessions/focus", "/settings/save", "/snaps/save", "/snaps/restore",
-                        "/net/copy") and not mutating:
+                        "/net/copy", "/open-url") and not mutating:
             out, ctype, status = b"forbidden", "text/plain", b"403 Forbidden"
+        elif u.path == "/open-url":
+            url = qs.get("url", "")
+            try:
+                parsed = urllib.parse.urlsplit(url)
+            except ValueError:
+                parsed = None
+            ctype = "text/plain; charset=utf-8"
+            if (not parsed or parsed.scheme not in ("http", "https") or not parsed.hostname
+                    or re.search(r"[\x00-\x20\x7f]", url)):
+                out, status = b"invalid URL", b"400 Bad Request"
+            else:
+                rc, res = await run(["/usr/bin/open", url])
+                out = b"ok" if rc == 0 else ("could not open URL: " + res.strip()).encode()
+                if rc:
+                    status = b"502 Bad Gateway"
         elif u.path == "/net/copy":
             # the line carries the proxy password: it goes straight to the clipboard, never to the page
             line = proxy_export(qs.get("name", ""))

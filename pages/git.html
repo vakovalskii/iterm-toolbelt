@@ -10,7 +10,7 @@
 pre{margin:6px 0 0;font:11px/1.35 "SF Mono",Menlo,monospace;white-space:pre-wrap;word-break:break-all;max-height:55vh;overflow:auto;background:#0e1013;padding:6px;border-radius:4px}
 .add{color:var(--ok)}.del{color:var(--bad)}.hunk{color:var(--acc)}.pill{display:inline-block;padding:0 6px;border-radius:9px;border:1px solid var(--line)}
 details summary{cursor:pointer;color:var(--mut)}
-</style></head><body><div id="app" class="s mut">loading…</div>
+</style></head><body><div id="open-error" class="s bad" role="alert" hidden></div><div id="app" class="s mut">loading…</div>
 <script>
 let sel=null, last=null;
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -27,17 +27,27 @@ function render(d){
   else if(r.branch!=="main"&&r.branch!=="HEAD") h+=`<span class="warn">· branch not pushed</span>`;
   h+=`</div></div>`;
   for(const c of (d.checks||[])){const cls=c.rc===0?"ok":"bad";h+=`<div class="s"><h3>${e(c.name)}</h3><div class="${cls}">${e(c.lines[0]||("exit "+c.rc))}</div>${c.lines.slice(1).map(x=>`<div class="mut row"><span>${e(x)}</span></div>`).join("")}</div>`}
-  if(d.pr){const p=d.pr;h+=`<div class="s"><h3>Branch PR</h3><div class="row"><a href="${e(p.url)}" target="_blank">#${p.number}</a><span>${e(p.title)}</span></div>
+  if(d.pr){const p=d.pr;h+=`<div class="s"><h3>Branch PR</h3><div class="row"><a data-pr href="${e(p.url)}" target="_blank">#${p.number}</a><span>${e(p.title)}</span></div>
    <div>${p.isDraft?'<span class="pill mut">draft</span> ':""}<span class="pill">${e(p.state)}</span> ${ck(p.checks)} ${p.mergeable==="CONFLICTING"?'<span class="bad">conflict</span>':""}</div></div>`}
   h+=`<div class="s"><h3>Changes ${r.files_total?`(${r.files_total})`:""}</h3><div class="mut">${e(r.shortstat)||(r.files_total?"":"clean")}</div>`;
   for(const f of r.files){h+=`<div class="row f ${sel===f.path?"sel":""}" data-p="${e(f.path)}"><span class="st">${e(f.st)}</span><span>${e(f.path)}</span></div>`}
   h+=`<div id="diff"></div></div>`;
-  if(d.my_prs&&d.my_prs.length){h+=`<div class="s"><h3>My open PRs (${d.my_prs.length})</h3>`;for(const p of d.my_prs){h+=`<div class="row"><a href="${e(p.url)}" target="_blank">#${p.number}</a>${p.isDraft?'<span class="mut">draft</span>':""}<span>${ck(p.checks)}</span><span>${e(p.title)}</span></div>`}h+=`</div>`}
+  if(d.my_prs&&d.my_prs.length){h+=`<div class="s"><h3>My open PRs (${d.my_prs.length})</h3>`;for(const p of d.my_prs){h+=`<div class="row"><a data-pr href="${e(p.url)}" target="_blank">#${p.number}</a>${p.isDraft?'<span class="mut">draft</span>':""}<span>${ck(p.checks)}</span><span>${e(p.title)}</span></div>`}h+=`</div>`}
   if(d.worktrees&&d.worktrees.length>1){h+=`<div class="s"><details><summary>Worktrees: ${d.worktrees.length}</summary>${d.worktrees.map(w=>`<div class="row mut"><span>${e(w.branch||"")}</span><span>${e((w.path||"").split("/").slice(-1)[0])}</span></div>`).join("")}</details></div>`}
   h+=`<div class="s mut">${e(d.ts)} · ${e(d.cwd)}</div>`; return h;
 }
 function colorDiff(t){return t.split("\n").map(l=>{const c=l.startsWith("+")&&!l.startsWith("+++")?"add":l.startsWith("-")&&!l.startsWith("---")?"del":l.startsWith("@@")?"hunk":"";return `<span class="${c}">${e(l)}</span>`}).join("\n")}
 async function showDiff(){const box=document.getElementById("diff");if(!box||!sel)return;const t=await (await fetch("/diff?f="+encodeURIComponent(sel))).text();box.innerHTML=`<pre>${colorDiff(t)}</pre>`}
+// The Toolbelt web view does not handle target="_blank"; let macOS open PRs in the browser.
+document.addEventListener("click",async ev=>{
+  const link=ev.target.closest("a[data-pr]");if(!link)return;
+  ev.preventDefault();
+  const error=document.getElementById("open-error");error.hidden=true;
+  try{
+    const r=await fetch("/open-url?"+new URLSearchParams({url:link.href}),{method:"POST",headers:{"X-Toolbelt":"1"}});
+    const message=await r.text();if(!r.ok||message!=="ok")throw new Error(message||"could not open PR");
+  }catch(err){error.textContent="Could not open PR: "+err.message;error.hidden=false}
+});
 let V=null;
 async function tick(){try{const d=await (await fetch("/state")).json();if(V&&d.v!==V){location.reload();return}V=d.v;const key=JSON.stringify(d);if(key!==last){last=key;const open=document.querySelector("details")?.open;document.getElementById("app").outerHTML=`<div id="app">${render(d)}</div>`;if(open)document.querySelector("details")?.setAttribute("open","");
  document.querySelectorAll(".f").forEach(n=>n.onclick=()=>{sel=sel===n.dataset.p?null:n.dataset.p;last=null;tick()});if(sel)showDiff()}}catch(err){document.getElementById("app").innerHTML=`<div class="s bad">panel is not responding</div>`}}
