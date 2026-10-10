@@ -1050,8 +1050,23 @@ def settings_save(body: bytes) -> str:
 #   "servers": [{"name": "eu-1", "host": "203.0.113.5", "port": 22}]
 # Everything is probed from this Mac, so the panel answers "what works from where I sit now".
 
-NET_TARGETS = (("anthropic", "https://api.anthropic.com/v1/models"),
-               ("openai", "https://api.openai.com/v1/models"))
+def _codex_target() -> str:
+    """Codex signed in with a ChatGPT account talks to chatgpt.com, with an API key to api.openai.com."""
+    try:
+        with open(os.path.expanduser("~/.codex/auth.json")) as f:
+            if json.load(f).get("auth_mode") == "chatgpt":
+                return "https://chatgpt.com/backend-api/codex/models"
+    except Exception:  # noqa: BLE001
+        pass
+    return "https://api.openai.com/v1/models"
+
+
+# one column per CLI: what each agent actually calls. Without a key every endpoint answers 401,
+# which means "reachable"; 403 is a region block, no answer means the path is dead.
+def net_targets() -> tuple:
+    return (("claude", "https://api.anthropic.com/v1/models"),
+            ("codex", _codex_target()),
+            ("openai", "https://api.openai.com/v1/models"))
 PROXY_RE = re.compile(r"(?:^|\s)(?:HTTPS_PROXY|https_proxy|ALL_PROXY|all_proxy)=(\S+)")
 
 
@@ -1096,8 +1111,9 @@ async def _curl(proxy: str, url: str) -> dict:
 
 
 async def _probe_proxy(name: str, url: str) -> dict:
-    res = await asyncio.gather(*(_curl(url, u) for _, u in NET_TARGETS))
-    return {"name": name, "hp": _hostport(url) if url else "", **{k: r for (k, _), r in zip(NET_TARGETS, res)}}
+    targets = net_targets()
+    res = await asyncio.gather(*(_curl(url, u) for _, u in targets))
+    return {"name": name, "hp": _hostport(url) if url else "", "res": {k: r for (k, _), r in zip(targets, res)}}
 
 
 async def _probe_server(s: dict) -> dict:
@@ -1127,7 +1143,7 @@ async def _net_probe() -> dict:
                                   for p in CFG.get("proxies") or [] if p.get("url")]
     pr, sv = await asyncio.gather(asyncio.gather(*(_probe_proxy(n, u) for n, u in proxies)),
                                   asyncio.gather(*(_probe_server(s) for s in CFG.get("servers") or [] if s.get("host"))))
-    return {"at": time.time(), "proxies": list(pr), "servers": list(sv)}
+    return {"at": time.time(), "targets": [k for k, _ in net_targets()], "proxies": list(pr), "servers": list(sv)}
 
 
 # Keenetic router (optional, local config only): "keenetic": {"host": "192.168.1.1", "login": "admin", "password": "…"}

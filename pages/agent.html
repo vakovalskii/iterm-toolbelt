@@ -49,15 +49,18 @@ tick();setInterval(tick,1000);
 const nd=document.getElementById("net");try{nd.open=localStorage.getItem("net")!=="0"}catch(_){nd.open=true}
 nd.addEventListener("toggle",()=>{try{localStorage.setItem("net",nd.open?"1":"0")}catch(_){}});
 const api=r=>!r||!r.code?`<span class="bad">dead</span>`:r.code===403?`<span class="warn">403 ${r.ms}ms</span>`:r.code<500?`<span class="ok">${r.ms}ms</span>`:`<span class="warn">${r.code}</span>`;
-const alive=p=>p&&p.anthropic&&p.openai&&p.anthropic.code&&p.anthropic.code!==403&&p.anthropic.code<500&&p.openai.code&&p.openai.code<500;
+const up=r=>r&&r.code&&r.code!==403&&r.code<500;
+// a proxy is alive when every agent CLI can reach its API through it
+const alive=p=>!!(p&&p.res&&Object.values(p.res).length&&Object.values(p.res).every(up));
 async function net(){try{const d=await (await fetch("/net/state")).json();const pr=d.probe;
   const cur=d.session;let h="",sum="network";
   if(cur){const row=pr&&pr.proxies.find(x=>x.name===cur.name);const ok=row?alive(row):null;
     sum=`network · claude via <span class="${ok===false?"bad":ok?"ok":"cur"}">${e(cur.name)}</span>`;
     h+=`<div>this claude → <b class="cur">${e(cur.name)}</b> ${cur.url?`<span class="mut">${e(cur.url)}</span>`:""} ${ok===false?'<span class="bad">✗ proxy is down</span>':ok?'<span class="ok">✓ alive</span>':""}</div>`}
   if(!pr){h+=`<div class="mut">probing…</div>`}else{
-    h+=`<table><tr class="mut"><td>proxy</td><td>anthropic</td><td>openai</td><td></td></tr>`;
-    for(const p of pr.proxies)h+=`<tr><td class="n ${cur&&cur.name===p.name?"cur":""}" title="${e(p.hp)}">${alive(p)?"●":"○"} ${e(p.name)}</td><td>${api(p.anthropic)}</td><td>${api(p.openai)}</td><td class="act"><span class="lnk" data-copy="${e(p.name)}" title="copy an export line for a shell">⧉ export</span> <span class="lnk" data-run="${e(p.name)}" title="new claude in this directory through this proxy (new tab)">▶ claude</span></td></tr>`;
+    const tg=pr.targets||[];
+    h+=`<table><tr class="mut"><td>proxy</td>${tg.map(t=>`<td>${e(t)}</td>`).join("")}<td></td></tr>`;
+    for(const p of pr.proxies)h+=`<tr><td class="n ${cur&&cur.name===p.name?"cur":""}" title="${e(p.hp)}">${alive(p)?"●":"○"} ${e(p.name)}</td>${tg.map(t=>`<td>${api(p.res&&p.res[t])}</td>`).join("")}<td class="act"><span class="lnk" data-copy="${e(p.name)}" title="copy an export line for a shell">⧉ export</span> <span class="lnk" data-run="${e(p.name)}" data-tool="claude" title="new claude in this directory through this proxy">▶ claude</span> <span class="lnk" data-run="${e(p.name)}" data-tool="codex" title="new codex in this directory through this proxy">▶ codex</span></td></tr>`;
     h+=`</table>`;
     const kn=d.keenetic;
     if(kn&&kn.error){h+=`<div class="mut">router: ${e(kn.error)}</div>`}
@@ -78,7 +81,7 @@ net();setInterval(net,5000);
 // proxy actions: the export line (with the password) is put on the clipboard by the service, not shown here
 document.getElementById("netb").addEventListener("click",async ev=>{const t=ev.target.closest(".lnk");if(!t)return;
   const copy=t.dataset.copy,run=t.dataset.run,old=t.textContent;t.textContent="…";
-  try{const r=await (await fetch((copy?"/net/copy?":"/sessions/open?")+new URLSearchParams(copy?{name:copy}:{tool:"claude",proxy:run}),
+  try{const r=await (await fetch((copy?"/net/copy?":"/sessions/open?")+new URLSearchParams(copy?{name:copy}:{tool:t.dataset.tool||"claude",proxy:run}),
       {method:"POST",headers:{"X-Toolbelt":"1"}})).text();
     t.textContent=r==="copied"?"✓ copied":r==="ok"?"✓ opened":"✗ "+r}catch(_){t.textContent="✗ error"}
   setTimeout(()=>{t.textContent=old},1800)});
