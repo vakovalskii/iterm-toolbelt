@@ -659,7 +659,17 @@ def _scan_all() -> list:
 
 async def _active_agents() -> list:
     """Running claude (via ~/.claude/sessions/<pid>.json) and codex (via processes)."""
-    out = []
+    _, ps = await run(["ps", "-axo", "pid=,tty=,stat=,command="], timeout=5)
+    ttys, stopped = {}, set()
+    for line in ps.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, tty, stat, cmd = parts
+        ttys[pid] = tty
+        if stat.startswith("T"):
+            stopped.add(pid)  # suspended with Ctrl+Z: not a running agent
+    claude = {}
     for meta in glob.glob(os.path.join(CLAUDE_DIR, "sessions", "*.json")):
         try:
             with open(meta) as f:
@@ -667,19 +677,23 @@ async def _active_agents() -> list:
             os.kill(int(d["pid"]), 0)
         except Exception:  # noqa: BLE001
             continue
-        out.append({"tool": "claude", "pid": d["pid"], "id": d.get("sessionId"), "dir": d.get("cwd", ""),
-                    "name": d.get("name", ""), "status": d.get("status", ""), "since": d.get("startedAt", 0)})
-    _, ps = await run(["ps", "-axo", "pid=,tty=,command="], timeout=5)
-    ttys = {}
-    for line in ps.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) < 3:
+        if str(d["pid"]) in stopped:
             continue
-        pid, tty, cmd = parts
-        ttys[pid] = tty
+        a = {"tool": "claude", "pid": d["pid"], "id": d.get("sessionId"), "dir": d.get("cwd", ""),
+             "name": d.get("name", ""), "status": d.get("status", ""), "since": d.get("startedAt", 0)}
+        # the same session resumed in a second process: keep the newest one
+        k = a["id"] or f"pid:{a['pid']}"
+        if k not in claude or (a["since"] or 0) > (claude[k]["since"] or 0):
+            claude[k] = a
+    out = list(claude.values())
+    for line in ps.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, tty, _stat, cmd = parts
         argv0 = os.path.basename(cmd.split()[0]) if cmd.split() else ""
         is_codex = argv0 == "codex" or re.search(r"/codex(\s|$)", cmd.split(" --")[0])
-        if is_codex and "app-server" not in cmd and tty not in ("??", "-"):
+        if is_codex and "app-server" not in cmd and tty not in ("??", "-") and pid not in stopped:
             _, cw = await run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], timeout=3)
             d = next((l[1:] for l in cw.splitlines() if l.startswith("n")), "")
             out.append({"tool": "codex", "pid": int(pid), "id": "", "dir": d, "name": "", "status": "", "since": 0})
@@ -698,10 +712,38 @@ async def sessions_state() -> dict:
             "skip": bool(CFG["agents"]["claude"].get("skip_permissions"))}
 
 
-def agent_command(tool: str, sid: str, skip: bool) -> str | None:
-    """Empty sid = new session. Prefix (e.g. HTTPS_PROXY=...) and flags come from the config."""
+NO_PROXY_PREFIX = "env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy -u ALL_PROXY -u all_proxy"
+
+
+def proxy_prefix(name: str) -> str | None:
+    """Env prefix that runs a command through a proxy from the local config ("direct" = none)."""
+    if name == "direct":
+        return NO_PROXY_PREFIX
+    url = next((p["url"] for p in CFG.get("proxies") or [] if p.get("url") and p.get("name") == name), None)
+    if not url:
+        return None
+    q = shlex.quote(url)
+    return f"HTTPS_PROXY={q} HTTP_PROXY={q}"
+
+
+def proxy_export(name: str) -> str | None:
+    """Line to paste into a shell: route this shell through the proxy (or drop the proxy)."""
+    if name == "direct":
+        return "unset HTTPS_PROXY HTTP_PROXY https_proxy http_proxy ALL_PROXY all_proxy"
+    p = proxy_prefix(name)
+    return p and "export " + p
+
+
+def agent_command(tool: str, sid: str, skip: bool, proxy: str = "") -> str | None:
+    """Empty sid = new session. Prefix (e.g. HTTPS_PROXY=...) and flags come from the config;
+    `proxy` (a name from the config, or "direct") replaces the configured prefix."""
     q = shlex.quote(sid) if sid else ""
-    a = CFG["agents"].get("claude" if tool in ("claude", "claude-ext") else tool, {})
+    a = dict(CFG["agents"].get("claude" if tool in ("claude", "claude-ext") else tool, {}))
+    if proxy:
+        pre = proxy_prefix(proxy)
+        if pre is None:
+            return None
+        a["prefix"] = pre
     if tool in ("claude", "claude-ext"):
         flags = (a.get("flags") or "").replace("--dangerously-skip-permissions", "").strip()
         if skip:
@@ -722,9 +764,14 @@ async def open_agent(q: dict) -> str:
     sid, tool, d = q.get("id", ""), q.get("tool", ""), q.get("dir", "")
     if sid and not SAFE_ID.match(sid):
         return "bad id"
-    cmd = agent_command(tool, sid, q.get("skip") == "1")
+    if q.get("proxy"):
+        # launched from the network block: current pane's directory, settings from Sessions
+        d = d or STATE["cwd"] or ""
+        q.setdefault("skip", "1" if CFG["agents"]["claude"].get("skip_permissions") else "0")
+        q.setdefault("where", CFG.get("open_in", "window"))
+    cmd = agent_command(tool, sid, q.get("skip") == "1", q.get("proxy", ""))
     if not cmd:
-        return f"cannot launch {tool}"
+        return f"cannot launch {tool}" + (f" via {q['proxy']}" if q.get("proxy") else "")
     if d and not os.path.isdir(d):
         return f"no such directory: {d}"
     conn = CONN.get("c")
@@ -1222,8 +1269,19 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
                              ensure_ascii=False).encode()
         elif u.path == "/settings/state":
             out = json.dumps(settings_state(), ensure_ascii=False).encode()
-        elif u.path in ("/sessions/open", "/sessions/focus", "/settings/save", "/snaps/save", "/snaps/restore") and not mutating:
+        elif u.path in ("/sessions/open", "/sessions/focus", "/settings/save", "/snaps/save", "/snaps/restore",
+                        "/net/copy") and not mutating:
             out, ctype, status = b"forbidden", "text/plain", b"403 Forbidden"
+        elif u.path == "/net/copy":
+            # the line carries the proxy password: it goes straight to the clipboard, never to the page
+            line = proxy_export(qs.get("name", ""))
+            if line:
+                p = await asyncio.create_subprocess_exec("pbcopy", stdin=asyncio.subprocess.PIPE)
+                await p.communicate(line.encode())
+                res = "copied"
+            else:
+                res = "unknown proxy"
+            out, ctype = res.encode(), "text/plain; charset=utf-8"
         elif u.path == "/sessions/open":
             try:
                 res = await open_agent(qs)
