@@ -739,6 +739,7 @@ def agent_command(tool: str, sid: str, skip: bool, proxy: str = "") -> str | Non
     `proxy` (a name from the config, or "direct") replaces the configured prefix."""
     q = shlex.quote(sid) if sid else ""
     a = dict(CFG["agents"].get("claude" if tool in ("claude", "claude-ext") else tool, {}))
+    proxy = proxy or a.get("proxy") or ""
     if proxy:
         pre = proxy_prefix(proxy)
         if pre is None:
@@ -1011,7 +1012,64 @@ async def snap_restore(name: str, skip: bool) -> str:
 # ─────────────── Settings ───────────────
 
 def settings_state() -> dict:
-    return {"v": BOOT, "version": VERSION, "config": CFG, "config_file": CONFIG_FILE}
+    # proxy passwords and the router password never go to the page: masked URLs come back
+    # unchanged on save and are swapped for the stored ones
+    cfg = copy.deepcopy(CFG)
+    for px in cfg.get("proxies") or []:
+        px["url"] = mask(px.get("url", ""))
+    kn = cfg.get("keenetic")
+    if isinstance(kn, dict):
+        kn["password_set"] = bool(kn.get("password"))
+        kn["password"] = ""
+    return {"v": BOOT, "version": VERSION, "config": cfg, "config_file": CONFIG_FILE}
+
+
+PROXY_URL = re.compile(r"^(https?|socks5h?)://([^\s/@]+@)?[\w.-]+:\d{1,5}/?$")
+
+
+def _save_network(new: dict, cfg: dict) -> str | None:
+    """Proxies, servers and the router from the Settings page. Returns an error or None."""
+    if isinstance(new.get("proxies"), list):
+        old = {px.get("name"): px.get("url", "") for px in cfg.get("proxies") or []}
+        out, seen = [], set()
+        for px in new["proxies"]:
+            if not isinstance(px, dict):
+                continue
+            name, url = str(px.get("name", "")).strip(), str(px.get("url", "")).strip()
+            if not name and not url:
+                continue
+            if not name or name in seen or name == "direct":
+                return f"proxy name «{name}» is empty, taken or reserved"
+            if "***" in url:  # untouched masked URL: keep the stored one
+                url = old.get(px.get("orig") or name, "")
+            if not PROXY_URL.match(url):
+                return f"proxy «{name}»: expected scheme://[user:pass@]host:port"
+            seen.add(name)
+            out.append({"name": name, "url": url})
+        cfg["proxies"] = out
+    if isinstance(new.get("servers"), list):
+        out = []
+        for sv in new["servers"]:
+            if not isinstance(sv, dict) or not str(sv.get("host", "")).strip():
+                continue
+            try:
+                port = int(sv.get("port") or 22)
+            except (TypeError, ValueError):
+                return f"server «{sv.get('name')}»: port must be a number"
+            item = {"name": str(sv.get("name") or sv["host"]).strip(), "host": str(sv["host"]).strip(), "port": port}
+            if sv.get("banner") is False:
+                item["banner"] = False
+            out.append(item)
+        cfg["servers"] = out
+    if isinstance(new.get("keenetic"), dict):
+        k, cur = new["keenetic"], cfg.get("keenetic") or {}
+        host = str(k.get("host", "")).strip()
+        if not host:
+            cfg.pop("keenetic", None)
+        else:
+            cfg["keenetic"] = {"host": host, "login": str(k.get("login") or "admin").strip(),
+                               "password": k.get("password") or cur.get("password", "")}
+    return None
 
 
 def settings_save(body: bytes) -> str:
@@ -1030,7 +1088,8 @@ def settings_save(body: bytes) -> str:
     if isinstance(new.get("agents"), dict):
         for name, vals in new["agents"].items():
             if name in cfg["agents"] and isinstance(vals, dict):
-                cfg["agents"][name].update({k: v for k, v in vals.items() if k in ("prefix", "flags", "skip_permissions")})
+                cfg["agents"][name].update({k: v for k, v in vals.items()
+                                            if k in ("prefix", "flags", "skip_permissions", "proxy")})
     if isinstance(new.get("tabs"), dict):
         for k, v in new["tabs"].items():
             if k in cfg["tabs"] and bool(v) != cfg["tabs"][k]:
@@ -1038,7 +1097,11 @@ def settings_save(body: bytes) -> str:
                 restart = True
     if isinstance(new.get("repo_checks"), list):
         cfg["repo_checks"] = [c for c in new["repo_checks"] if isinstance(c, dict) and c.get("cmd")]
+    err = _save_network(new, cfg)
+    if err:
+        return err
     save_config(cfg)
+    CACHE.pop("net:probe", None)
     CFG.clear()
     CFG.update(cfg)
     return "restart" if restart else "ok"

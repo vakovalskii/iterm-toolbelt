@@ -9,6 +9,7 @@ h3{margin:0 0 6px;font-size:11px;color:var(--mut);font-weight:600;text-transform
 label.f{display:block;margin:6px 0 2px;color:var(--mut)}
 input[type=text],input[type=password],textarea{width:100%;background:#0e1013;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:5px 7px;font:11px/1.4 "SF Mono",Menlo,monospace}
 textarea{min-height:110px;resize:vertical}
+select{background:#0e1013;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:4px 6px;font:11px "SF Mono",Menlo,monospace}
 .row{display:flex;gap:6px;align-items:center}.sp{flex:1}
 .chip{cursor:pointer;padding:1px 8px;border-radius:9px;border:1px solid var(--line);color:var(--mut)}.chip.on{color:var(--fg);border-color:var(--acc)}
 button{background:#1f2a3a;color:var(--acc);border:1px solid var(--line);border-radius:5px;padding:4px 12px;cursor:pointer;font:inherit}button:hover{border-color:var(--acc)}button.main{color:var(--ok);border-color:var(--ok)}
@@ -23,10 +24,15 @@ let C=null, V=null;
 const e=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const maskUrl=s=>String(s||"").replace(/(:\/\/[^:\/\s@]+):([^@\s]+)@/g,"$1:***@");
 const TABS={git:"Git & PR",agent:"Agent actions",sessions:"Sessions",settings:"Settings"};
+const via=a=>a.proxy==="direct"?"env -u HTTPS_PROXY …":a.proxy?`HTTPS_PROXY=<${a.proxy}>`:a.prefix;
 function preview(){const a=C.agents.claude, x=C.agents.codex;
-  const cl=[a.prefix,"claude --resume <id>",(a.flags||"").replace("--dangerously-skip-permissions","").trim(),a.skip_permissions?"--dangerously-skip-permissions":""].filter(Boolean).join(" ");
-  const cx=[x.prefix,"codex resume <id>",x.flags].filter(Boolean).join(" ");
+  const cl=[via(a),"claude --resume <id>",(a.flags||"").replace("--dangerously-skip-permissions","").trim(),a.skip_permissions?"--dangerously-skip-permissions":""].filter(Boolean).join(" ");
+  const cx=[via(x),"codex resume <id>",x.flags].filter(Boolean).join(" ");
   document.getElementById("pv").textContent=maskUrl("cd <dir> && "+cl+"\ncd <dir> && "+cx)}
+function pick(id,cur){const names=["direct",...(C.proxies||[]).map(p=>p.name)];
+  return `<select id="${id}"><option value="">— use the prefix above —</option>${names.map(n=>`<option ${n===cur?"selected":""}>${e(n)}</option>`).join("")}</select>`}
+const pxRow=p=>`<div class="row px" data-orig="${e(p.name||"")}" style="margin-top:4px"><input type="text" class="pn" placeholder="name" value="${e(p.name||"")}" style="width:110px"><input type="text" class="pu" placeholder="http://user:pass@host:port" value="${e(p.url||"")}"><span class="chip del" title="remove">✕</span></div>`;
+const svRow=s=>`<div class="row sv" style="margin-top:4px"><input type="text" class="sn" placeholder="name" value="${e(s.name||"")}" style="width:110px"><input type="text" class="sh" placeholder="host" value="${e(s.host||"")}"><input type="text" class="sp2" placeholder="22" value="${e(s.port||"")}" style="width:56px"><label class="row mut" title="read the SSH banner"><input type="checkbox" class="sb" ${s.banner===false?"":"checked"}>banner</label><span class="chip del" title="remove">✕</span></div>`;
 function render(d){C=d.config;
   let h="";
   h+=`<div class="s" id="hello"><h3>How it works</h3><div class="card">
@@ -42,10 +48,12 @@ function render(d){C=d.config;
     <label class="f">prefix before the command (e.g. HTTPS_PROXY='http://user:pass@host:port')</label>
     <div class="row"><input type="password" id="cl_prefix" value="${e(C.agents.claude.prefix)}"><span class="chip" id="show">show</span></div>
     <label class="f">flags after the command</label><input type="text" id="cl_flags" value="${e((C.agents.claude.flags||"").replace("--dangerously-skip-permissions","").trim())}">
-    <label class="row" style="margin-top:6px"><input type="checkbox" id="cl_skip" ${C.agents.claude.skip_permissions?"checked":""}> --dangerously-skip-permissions by default</label></div>
+    <label class="row" style="margin-top:6px"><input type="checkbox" id="cl_skip" ${C.agents.claude.skip_permissions?"checked":""}> --dangerously-skip-permissions by default</label>
+    <label class="f">proxy for new sessions (overrides the prefix)</label>${pick("cl_proxy",C.agents.claude.proxy)}</div>
    <div class="card"><b>Codex</b>
     <label class="f">prefix</label><input type="password" id="cx_prefix" value="${e(C.agents.codex.prefix)}">
-    <label class="f">flags</label><input type="text" id="cx_flags" value="${e(C.agents.codex.flags)}"></div>
+    <label class="f">flags</label><input type="text" id="cx_flags" value="${e(C.agents.codex.flags)}">
+    <label class="f">proxy for new sessions (overrides the prefix)</label>${pick("cx_proxy",C.agents.codex.proxy)}</div>
    <div class="mut">the command will look like this (password hidden):</div><pre id="pv"></pre></div>`;
   h+=`<div class="s"><h3>Where to open sessions</h3><div class="row"><span class="chip ${C.open_in==="window"?"on":""}" data-w="window">new window</span><span class="chip ${C.open_in==="tab"?"on":""}" data-w="tab">tab in the current window</span></div></div>`;
   h+=`<div class="s"><h3>Toolbelt tabs</h3>${Object.keys(TABS).map(k=>`<label class="row"><input type="checkbox" data-t="${k}" ${C.tabs[k]?"checked":""} > ${e(TABS[k])}</label>`).join("")}
@@ -53,6 +61,13 @@ function render(d){C=d.config;
    <label class="row"><input type="checkbox" id="autosave" ${C.autosave!==false?"checked":""}> autosave a snapshot of all windows every 5 minutes</label>
    <label class="f">title prefix that tells these tabs apart from built-in iTerm tools</label><input type="text" id="prefix" value="${e(C.title_prefix)}" style="width:80px">
    <div class="mut">tab changes need a restart, it happens automatically after saving</div></div>`;
+  const kn=C.keenetic||{};
+  h+=`<div class="s" id="network"><h3>Network</h3>
+   <div class="mut">Proxies are probed every minute against the API of each agent CLI and get ⧉ export / ▶ claude / ▶ codex in Agent actions. Everything stays in the local config; passwords are masked here and kept as is unless you type a new URL.</div>
+   <div class="card"><b>Proxies</b><div id="pxs">${(C.proxies||[]).map(pxRow).join("")}</div><button id="addpx">+ proxy</button></div>
+   <div class="card"><b>Servers</b> <span class="mut">ping and a TCP check from this Mac; untick the banner for non-SSH ports (MTProto, VPN)</span><div id="svs">${(C.servers||[]).map(svRow).join("")}</div><button id="addsv">+ server</button></div>
+   <div class="card"><b>Keenetic router</b> <span class="mut">optional: tunnels and per-domain routes over RCI; empty address turns it off</span>
+    <div class="row"><input type="text" id="kn_host" placeholder="192.168.1.1" value="${e(kn.host||"")}" style="width:130px"><input type="text" id="kn_login" placeholder="admin" value="${e(kn.login||"")}" style="width:90px"><input type="password" id="kn_pass" placeholder="${kn.password_set?"password unchanged":"password"}"></div></div></div>`;
   h+=`<div class="s"><h3>Repo checks</h3><div class="mut">Your own lines in the Git &amp; PR tab: if <code>file</code> exists in the repo root, <code>cmd</code> runs; exit 0 is green, anything else red.</div>
    <textarea id="checks" spellcheck="false">${e(JSON.stringify(C.repo_checks||[],null,1))}</textarea>
    <div class="mut">example: [{"name":"Containers","file":"docker-compose.yml","cmd":"docker compose ps","max_lines":6}]</div></div>`;
@@ -63,22 +78,30 @@ function render(d){C=d.config;
   ["cl_prefix","cl_flags","cx_prefix","cx_flags"].forEach(id=>$(id).oninput=()=>{collect();preview()});
   $("cl_skip").onchange=()=>{collect();preview()};
   document.querySelectorAll("[data-w]").forEach(n=>n.onclick=()=>{C.open_in=n.dataset.w;document.querySelectorAll("[data-w]").forEach(m=>m.classList.toggle("on",m===n))});
+  $("addpx").onclick=()=>$("pxs").insertAdjacentHTML("beforeend",pxRow({}));
+  $("addsv").onclick=()=>$("svs").insertAdjacentHTML("beforeend",svRow({}));
+  document.getElementById("network").addEventListener("click",ev=>{if(ev.target.classList.contains("del"))ev.target.closest(".row").remove()});
+  ["cl_proxy","cx_proxy"].forEach(id=>$(id).onchange=()=>{collect();preview()});
   if($("done"))$("done").onclick=async()=>{C.onboarded=true;await save(true);document.getElementById("agents").scrollIntoView({behavior:"smooth"})};
   preview();
   if(location.hash)setTimeout(()=>document.querySelector(location.hash)?.scrollIntoView({behavior:"smooth"}),50);
 }
 function collect(){const $=id=>document.getElementById(id);
   C.agents.claude.prefix=$("cl_prefix").value.trim();C.agents.claude.flags=$("cl_flags").value.trim();C.agents.claude.skip_permissions=$("cl_skip").checked;
-  C.agents.codex.prefix=$("cx_prefix").value.trim();C.agents.codex.flags=$("cx_flags").value.trim();}
+  C.agents.codex.prefix=$("cx_prefix").value.trim();C.agents.codex.flags=$("cx_flags").value.trim();
+  C.agents.claude.proxy=$("cl_proxy").value;C.agents.codex.proxy=$("cx_proxy").value;}
 async function save(quiet){const $=id=>document.getElementById(id);const msg=$("msg");
   collect();
   document.querySelectorAll("[data-t]").forEach(n=>C.tabs[n.dataset.t]=n.checked);
   C.title_prefix=$("prefix").value;C.auto_show_toolbelt=$("autoshow").checked;C.autosave=$("autosave").checked;
   let checks;try{checks=JSON.parse($("checks").value||"[]");if(!Array.isArray(checks))throw 0}catch(_){msg.innerHTML='<span class="bad">checks: a JSON array is required</span>';return}
-  const body={autosave:C.autosave,auto_show_toolbelt:C.auto_show_toolbelt,open_in:C.open_in,title_prefix:C.title_prefix,onboarded:C.onboarded,agents:C.agents,tabs:C.tabs,repo_checks:checks};
+  const proxies=[...document.querySelectorAll(".px")].map(r=>({orig:r.dataset.orig,name:r.querySelector(".pn").value.trim(),url:r.querySelector(".pu").value.trim()}));
+  const servers=[...document.querySelectorAll(".sv")].map(r=>({name:r.querySelector(".sn").value.trim(),host:r.querySelector(".sh").value.trim(),port:r.querySelector(".sp2").value.trim()||22,banner:r.querySelector(".sb").checked?undefined:false}));
+  const keenetic={host:$("kn_host").value.trim(),login:$("kn_login").value.trim(),password:$("kn_pass").value};
+  const body={autosave:C.autosave,auto_show_toolbelt:C.auto_show_toolbelt,open_in:C.open_in,title_prefix:C.title_prefix,onboarded:C.onboarded,agents:C.agents,tabs:C.tabs,repo_checks:checks,proxies,servers,keenetic};
   const r=await (await fetch("/settings/save",{method:"POST",headers:{"X-Toolbelt":"1","Content-Type":"application/json"},body:JSON.stringify(body)})).text();
   if(r==="restart"){msg.innerHTML='<span class="warn">restarting, tabs will refresh in a few seconds…</span>';setTimeout(()=>location.reload(),4000)}
-  else if(r==="ok"){msg.innerHTML=quiet?"":'<span class="ok">saved</span>';if(!quiet)setTimeout(()=>msg.textContent="",2500)}
+  else if(r==="ok"){msg.innerHTML=quiet?"":'<span class="ok">saved</span>';if(!quiet){setTimeout(()=>msg.textContent="",2500);load()}}
   else msg.innerHTML=`<span class="bad">${e(r)}</span>`}
 document.getElementById("save").onclick=()=>save(false);
 async function load(){try{const d=await (await fetch("/settings/state")).json();V=d.v;render(d)}catch(_){setTimeout(load,1500)}}

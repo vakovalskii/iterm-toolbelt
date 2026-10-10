@@ -75,7 +75,7 @@ async function net(){try{const d=await (await fetch("/net/state")).json();const 
       for(const s of pr.servers){const st=(s.banner||(s.nobanner&&s.tcp!==null))?"ok":s.tcp!==null?"warn":"bad";
         h+=`<tr><td class="n" title="${e(s.host)}:${s.port}"><span class="${st}">●</span> ${e(s.name)}</td><td>${s.ping!==null?s.ping+"ms":'<span class="mut">—</span>'}</td><td class="${st}">${(s.banner||s.nobanner)&&s.tcp!==null?s.tcp+"ms":s.tcp!==null?"open, no banner":"closed"}</td></tr>`}
       h+=`</table>`}
-    h+=`<div class="mut">checked ${new Date(pr.at*1000).toLocaleTimeString("ru-RU")}, from this Mac</div>`}
+    h+=`<div class="mut">checked ${new Date(pr.at*1000).toLocaleTimeString("ru-RU")}, from this Mac · <a href="/settings#network" style="color:var(--acc);text-decoration:none">✎ edit proxies and servers</a></div>`}
   nd.querySelector("summary").innerHTML=sum;document.getElementById("netb").innerHTML=h}catch(_){}}
 net();setInterval(net,5000);
 // proxy actions: the export line (with the password) is put on the clipboard by the service, not shown here
