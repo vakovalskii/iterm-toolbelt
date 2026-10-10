@@ -927,6 +927,24 @@ def test_http_open_url_reports_launch_failure(t, monkeypatch):
         502, "could not open URL: No application knows how to open the URL")
 
 
+def test_http_copy_puts_one_line_with_newline_on_clipboard(t, monkeypatch):
+    got = []
+
+    class FakeProc:
+        async def communicate(self, data):
+            got.append(data.decode())
+
+    async def fake_exec(*args, **kw):
+        assert args == ("pbcopy",)
+        return FakeProc()
+
+    monkeypatch.setattr(t.asyncio, "create_subprocess_exec", fake_exec)
+    for name in ("direct", "eu-1"):
+        assert asyncio.run(_http(t, _req("POST", f"/net/copy?name={name}", header=True))) == (200, "copied")
+    assert got[0] == t.proxy_export("direct") + "\n"
+    assert got[1] == t.proxy_export("eu-1") + "\n" and got[1].count("\n") == 1
+
+
 def test_http_basics(t):
     code, body = asyncio.run(_http(t, _req("POST", "/net/copy?name=nope", header=True)))
     assert (code, body) == (200, "unknown proxy")

@@ -1615,7 +1615,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             line = proxy_export(qs.get("name", ""))
             if line:
                 p = await asyncio.create_subprocess_exec("pbcopy", stdin=asyncio.subprocess.PIPE)
-                await p.communicate(line.encode())
+                # a trailing newline keeps two pastes in a row from gluing into one command
+                await p.communicate((line + "\n").encode())
                 res = "copied"
             else:
                 res = "unknown proxy"
